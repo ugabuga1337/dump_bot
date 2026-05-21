@@ -1,0 +1,50 @@
+{% if not signals %}
+<p class="muted">No signals yet.</p>
+{% else %}
+<table class="signals">
+    <thead>
+        <tr>
+            <th>Time</th>
+            <th>Symbol</th>
+            <th>Price</th>
+            <th>5m</th>
+            <th>15m</th>
+            <th>Vol×</th>
+            <th>OI</th>
+            <th>Func</th>
+            <th>Exh</th>
+            <th>Conf</th>
+            <th>Setup</th>
+            <th>MFE</th>
+            <th>MAE</th>
+            <th>Outcome</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for s in signals %}
+        <tr class="conf-{{ (s.confidence_label or '')|lower }}">
+            <td>{{ s.created_ms | ts }}</td>
+            <td><code>{{ s.symbol }}</code></td>
+            <td>{{ s.price | price }}</td>
+            <td>{{ s.pump_5m_pct | pct }}</td>
+            <td>{{ s.pump_15m_pct | pct }}</td>
+            <td>{{ '%.1f'|format(s.volume_ratio or 0) }}x</td>
+            <td>{{ s.oi_change_pct | pct }}</td>
+            <td>{{ s.funding_rate | pct(signed=False) }}</td>
+            <td>{{ '%.0f'|format(s.exhaustion_score or 0) }}</td>
+            <td>{{ '%.0f'|format(s.confidence_score or 0) }} ({{ s.confidence_label or '' }})</td>
+            <td class="tags">
+                {% for t in s.setup_tags %}<span class="tag">{{ t }}</span>{% endfor %}
+            </td>
+            <td>{{ s.max_favorable_pct | pct if s.max_favorable_pct is not none else '—' }}</td>
+            <td>{{ s.max_adverse_pct | pct if s.max_adverse_pct is not none else '—' }}</td>
+            <td>
+                {% if s.is_win == 1 %}<span class="win">win</span>
+                {% elif s.is_win == 0 %}<span class="loss">loss</span>
+                {% else %}<span class="muted">…</span>{% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}

@@ -1,0 +1,23 @@
+{% if not patterns %}
+<p class="muted">No setups recorded.</p>
+{% else %}
+<table class="signals">
+    <thead>
+        <tr><th>Setup</th><th>Total</th><th>Wins</th><th>Winrate</th>
+        <th>Avg MFE</th><th>Avg MAE</th><th>Avg Conf</th></tr>
+    </thead>
+    <tbody>
+        {% for p in patterns %}
+        <tr>
+            <td><code>{{ p.tag }}</code></td>
+            <td>{{ p.total }}</td>
+            <td>{{ p.wins }}</td>
+            <td>{{ '%.1f'|format(p.winrate_pct) }}%</td>
+            <td>{{ p.avg_mfe | pct }}</td>
+            <td>{{ p.avg_mae | pct }}</td>
+            <td>{{ '%.1f'|format(p.avg_confidence) }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}

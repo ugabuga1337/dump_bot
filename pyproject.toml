@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dump-bot"
+version = "0.1.0"
+description = "Binance Futures USDT-M pump exhaustion / short setup signal engine"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "dump_bot" }]
+
+[tool.setuptools]
+packages = [
+    "core",
+    "connectors",
+    "strategy",
+    "signals",
+    "telegram",
+    "dashboard",
+    "storage",
+    "backtesting",
+    "utils",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "W"]
+ignore = [
+    "E501",   # line length
+    "UP042",  # str-Enum is fine in 3.11+ and matches our serialization
+]
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI's Depends() in argument defaults is the recommended pattern.
+"dashboard/api.py" = ["B008"]
+"dashboard/auth.py" = ["B008"]

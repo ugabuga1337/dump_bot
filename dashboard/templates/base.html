@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{% block title %}Dump Bot{% endblock %}</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" defer></script>
+</head>
+<body>
+    <nav class="sidebar">
+        <div class="brand">⚡ <span>dump bot</span></div>
+        <ul>
+            <li><a href="/" class="{% if section == 'live' %}active{% endif %}">Live</a></li>
+            <li><a href="/signals" class="{% if section == 'signals' %}active{% endif %}">Signals</a></li>
+            <li><a href="/analytics" class="{% if section == 'analytics' %}active{% endif %}">Analytics</a></li>
+            <li><a href="/coins" class="{% if section == 'coins' %}active{% endif %}">Coins</a></li>
+            <li><a href="/patterns" class="{% if section == 'patterns' %}active{% endif %}">Patterns</a></li>
+        </ul>
+        <div class="footer">
+            <a href="/logout">logout</a>
+        </div>
+    </nav>
+    <main>
+        <header class="topbar">
+            <h1>{% block heading %}{% endblock %}</h1>
+            <div id="status-pill"
+                 hx-get="/api/fragments/status"
+                 hx-trigger="load, every 10s"
+                 hx-swap="innerHTML"></div>
+        </header>
+        <section class="content">
+            {% block content %}{% endblock %}
+        </section>
+    </main>
+    <script src="/static/app.js" defer></script>
+</body>
+</html>
