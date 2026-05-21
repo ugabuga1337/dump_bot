@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Login · Dump Bot</title>
+    <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="login-body">
+    <div class="login-card">
+        <h2>⚡ dump bot</h2>
+        {% if error %}<p class="error">{{ error }}</p>{% endif %}
+        <form method="POST" action="/login" autocomplete="off">
+            <label>User
+                <input type="text" name="user" autofocus required />
+            </label>
+            <label>Password
+                <input type="password" name="password" required />
+            </label>
+            <button type="submit">sign in</button>
+        </form>
+        <p class="muted">Read-only dashboard. Set DASHBOARD_USER / DASHBOARD_PASSWORD in <code>.env</code>.</p>
+    </div>
+</body>
+</html>

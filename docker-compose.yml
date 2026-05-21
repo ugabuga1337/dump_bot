@@ -1,0 +1,52 @@
+services:
+  engine:
+    build: .
+    image: dump_bot:latest
+    container_name: dump_bot_engine
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - SERVICE=engine
+    volumes:
+      - ./data:/data
+      - ./config:/app/config:ro
+    command: ["python", "-m", "main"]
+    mem_limit: 600m
+    mem_reservation: 256m
+    cpus: 0.8
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,time; sys.exit(0 if os.path.exists('/data/heartbeat') and (time.time()-os.path.getmtime('/data/heartbeat'))<120 else 1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  dashboard:
+    build: .
+    image: dump_bot:latest
+    container_name: dump_bot_dashboard
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - SERVICE=dashboard
+    depends_on:
+      - engine
+    ports:
+      - "${DASHBOARD_PORT:-8080}:8080"
+    volumes:
+      - ./data:/data:ro
+      - ./config:/app/config:ro
+    command: ["python", "-m", "dashboard"]
+    mem_limit: 256m
+    mem_reservation: 128m
+    cpus: 0.4
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"

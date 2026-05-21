@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Patterns · Dump Bot{% endblock %}
+{% block heading %}Setup performance{% endblock %}
+{% block content %}
+<div class="card">
+    <div hx-get="/api/fragments/patterns" hx-trigger="load, every 30s" hx-swap="innerHTML">
+        <p class="muted">loading…</p>
+    </div>
+</div>
+{% endblock %}

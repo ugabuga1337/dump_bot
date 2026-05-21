@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Signals · Dump Bot{% endblock %}
+{% block heading %}Signal history{% endblock %}
+{% block content %}
+<form class="filters"
+      hx-get="/api/fragments/signals"
+      hx-target="#signals-table"
+      hx-trigger="change delay:200ms, submit"
+      hx-swap="innerHTML">
+    <label>Symbol <input name="symbol" placeholder="e.g. DOGEUSDT"></label>
+    <label>Min confidence
+        <select name="min_confidence">
+            <option value="">any</option>
+            <option value="55">≥ 55</option>
+            <option value="70">≥ 70</option>
+            <option value="82">≥ 82</option>
+        </select>
+    </label>
+    <label>Setup
+        <select name="setup">
+            <option value="">any</option>
+            <option value="failed_breakout">failed_breakout</option>
+            <option value="liquidity_grab">liquidity_grab</option>
+            <option value="climax_volume">climax_volume</option>
+            <option value="oi_flat">oi_flat</option>
+            <option value="cvd_divergence">cvd_divergence</option>
+            <option value="rsi_divergence">rsi_divergence</option>
+            <option value="delta_flip">delta_flip</option>
+            <option value="rejection_candle">rejection_candle</option>
+            <option value="multi_confirmation">multi_confirmation</option>
+        </select>
+    </label>
+    <label>Window
+        <select name="since_hours">
+            <option value="">all</option>
+            <option value="24">24h</option>
+            <option value="72">3d</option>
+            <option value="168">7d</option>
+            <option value="720">30d</option>
+        </select>
+    </label>
+    <label>Limit
+        <select name="limit">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+        </select>
+    </label>
+</form>
+<div id="signals-table"
+     hx-get="/api/fragments/signals?limit=50"
+     hx-trigger="load"
+     hx-swap="innerHTML">
+    <p class="muted">loading…</p>
+</div>
+{% endblock %}

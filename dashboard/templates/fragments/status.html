@@ -1,0 +1,34 @@
+{% set status = status %}
+{% set ws_total = (status.ws | length) if status.ws else 0 %}
+{% set ws_ok = status.ws | selectattr('connected') | list | length if status.ws else 0 %}
+<div class="status-block">
+    <div class="row"><span class="lbl">Regime</span>
+        <span class="val regime-{{ (status.regime or 'neutral')|lower }}">{{ status.regime or '—' }}</span>
+    </div>
+    <div class="row"><span class="lbl">BTC</span>
+        <span class="val">{{ status.btc_price | price }} ({{ status.btc_trend_pct | pct }})</span>
+    </div>
+    <div class="row"><span class="lbl">ATR%</span>
+        <span class="val">{{ status.btc_atr_pct | pct(signed=False) }}</span>
+    </div>
+    <div class="row"><span class="lbl">Overheated</span>
+        <span class="val">{{ status.overheated or 0 }}</span>
+    </div>
+    <div class="row"><span class="lbl">WS shards</span>
+        <span class="val">{{ ws_ok }}/{{ ws_total }}</span>
+    </div>
+    <div class="row"><span class="lbl">Signals total</span>
+        <span class="val">{{ status.signals_emitted_total or 0 }}</span>
+    </div>
+    <div class="row"><span class="lbl">Pumps total</span>
+        <span class="val">{{ status.pumps_detected_total or 0 }}</span>
+    </div>
+    <div class="row"><span class="lbl">Snapshot age</span>
+        <span class="val">{{ status.snapshot_age_sec or '—' }}s</span>
+    </div>
+    {% if status.telegram %}
+    <div class="row"><span class="lbl">Telegram</span>
+        <span class="val">sent {{ status.telegram.sent or 0 }} / pending {{ status.telegram.pending or 0 }}</span>
+    </div>
+    {% endif %}
+</div>

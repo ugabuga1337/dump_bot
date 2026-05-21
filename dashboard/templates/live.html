@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Live · Dump Bot{% endblock %}
+{% block heading %}Live monitoring{% endblock %}
+{% block content %}
+<div class="grid two-col">
+    <div class="card">
+        <h3>Latest signals</h3>
+        <div hx-get="/api/fragments/signals?limit=10" hx-trigger="load, every 15s" hx-swap="innerHTML">
+            <p class="muted">loading…</p>
+        </div>
+    </div>
+    <div class="card">
+        <h3>Health</h3>
+        <div id="status-block"
+             hx-get="/api/fragments/status"
+             hx-trigger="load, every 5s"
+             hx-swap="innerHTML">
+        </div>
+    </div>
+</div>
+{% endblock %}

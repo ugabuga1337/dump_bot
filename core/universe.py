@@ -1,0 +1,119 @@
+"""Universe discovery and filtering.
+
+Pulls Binance Futures USDT-M perpetual contracts via REST, filters by
+volume/price/blacklist, and exposes the current trading universe as a list
+of symbol identifiers.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from config import UniverseConfig
+from connectors import BinanceFuturesREST
+
+log = logging.getLogger("universe")
+
+
+_LEVERAGED_TOKENS = ("UP", "DOWN", "BULL", "BEAR")
+
+
+def _looks_leveraged(symbol: str, base: str) -> bool:
+    s = symbol.upper()
+    for tag in _LEVERAGED_TOKENS:
+        if s.endswith(f"{tag}USDT"):
+            return True
+    return False
+
+
+class Universe:
+    def __init__(self, cfg: UniverseConfig, rest: BinanceFuturesREST) -> None:
+        self._cfg = cfg
+        self._rest = rest
+        self._symbols: list[str] = []
+        self._symbol_meta: dict[str, dict[str, Any]] = {}
+
+    @property
+    def symbols(self) -> list[str]:
+        return list(self._symbols)
+
+    def meta(self, symbol: str) -> dict[str, Any]:
+        return self._symbol_meta.get(symbol, {})
+
+    async def refresh(self) -> list[str]:
+        info = await self._rest.exchange_info()
+        ticker = await self._rest.ticker_24h()
+        ticker_map = {t["symbol"]: t for t in ticker}
+
+        tradable: list[dict[str, Any]] = []
+        whitelist = set(self._cfg.whitelist)
+        blacklist = set(self._cfg.blacklist)
+
+        for s in info.get("symbols", []):
+            symbol = s.get("symbol", "").upper()
+            contract_type = s.get("contractType", "")
+            status = s.get("status", "")
+            quote = s.get("quoteAsset", "").upper()
+            base = s.get("baseAsset", "").upper()
+
+            if status != "TRADING":
+                continue
+            if contract_type != "PERPETUAL":
+                continue
+            if quote != self._cfg.quote_asset:
+                continue
+            if symbol in blacklist:
+                continue
+            if whitelist and symbol not in whitelist:
+                continue
+            if self._cfg.exclude_leveraged and _looks_leveraged(symbol, base):
+                continue
+
+            t = ticker_map.get(symbol)
+            if not t:
+                continue
+            try:
+                quote_volume = float(t.get("quoteVolume", 0.0))
+                last_price = float(t.get("lastPrice", 0.0))
+                price_change_pct = float(t.get("priceChangePercent", 0.0))
+            except (TypeError, ValueError):
+                continue
+
+            if quote_volume < self._cfg.min_quote_volume_24h:
+                continue
+            if last_price < self._cfg.min_price:
+                continue
+
+            tradable.append(
+                {
+                    "symbol": symbol,
+                    "base_asset": base,
+                    "quote_asset": quote,
+                    "quote_volume_24h": quote_volume,
+                    "last_price": last_price,
+                    "price_change_pct": price_change_pct,
+                }
+            )
+
+        tradable.sort(key=lambda r: r["quote_volume_24h"], reverse=True)
+        if len(tradable) > self._cfg.max_symbols:
+            tradable = tradable[: self._cfg.max_symbols]
+
+        self._symbols = [r["symbol"] for r in tradable]
+        self._symbol_meta = {r["symbol"]: r for r in tradable}
+        log.info("universe_refreshed", extra={"count": len(self._symbols)})
+        return self._symbols
+
+    def export_rows(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "symbol": r["symbol"],
+                "quote_asset": r["quote_asset"],
+                "last_price": r["last_price"],
+                "quote_volume_24h": r["quote_volume_24h"],
+                "price_change_pct": r["price_change_pct"],
+                "active": 1,
+            }
+            for r in self._symbol_meta.values()
+        ]

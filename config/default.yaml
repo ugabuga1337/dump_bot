@@ -1,0 +1,42 @@
+# Optional YAML overlay for advanced tuning of the engine without editing code.
+# Keys here are merged on top of .env defaults via Settings.load(). Currently
+# used for fine-grained weight tuning of detectors. Everything is optional.
+
+pump_weights:
+  momentum: 0.30        # 5m + 15m price moves
+  acceleration: 0.15    # velocity / 2nd derivative
+  volume: 0.20          # relative volume spike
+  oi: 0.15              # open interest change with price
+  funding: 0.05         # overheated funding
+  relative_btc: 0.10    # outperformance vs BTC
+  candle_structure: 0.05
+
+exhaustion_weights:
+  upper_wicks: 0.13
+  failed_breakout: 0.12
+  rejection_candle: 0.10
+  liquidity_grab: 0.10
+  cvd_divergence: 0.10
+  delta_flip: 0.08
+  climax_volume: 0.10
+  oi_flat: 0.10
+  vol_compression: 0.07
+  rsi_divergence: 0.05
+  vwap_deviation: 0.05
+
+fake_pump_weights:
+  thin_liquidity: 0.30
+  wick_dominated: 0.25
+  no_oi_growth: 0.20
+  one_sided_trades: 0.15
+  cooldown_burst: 0.10
+
+confidence_weights:
+  exhaustion: 0.55
+  pump: 0.20
+  fake_pump_penalty: 0.10
+  regime: 0.10
+  whale: 0.05
+
+# Minimum number of distinct exhaustion reasons to allow firing.
+min_confirmations: 3

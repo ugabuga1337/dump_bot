@@ -1,0 +1,31 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.env
+.env.local
+.env.*.local
+
+# Local data / logs
+data/
+*.sqlite3
+*.sqlite3-journal
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Tests
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
