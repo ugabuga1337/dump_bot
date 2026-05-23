@@ -21,7 +21,7 @@ import time
 from typing import Any
 
 from config import Settings, get_settings
-from connectors import BinanceFuturesREST, StreamManager
+from connectors import BybitFuturesREST, StreamManager
 from core.market_regime import MarketRegimeDetector
 from core.models import (
     Kline,
@@ -44,7 +44,7 @@ class Engine:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
         weights = self.settings.raw_yaml or {}
-        self.rest = BinanceFuturesREST(self.settings.binance.rest_url)
+        self.rest = BybitFuturesREST(self.settings.exchange.rest_url)
         self.regime = MarketRegimeDetector(self.settings.regime, self.rest)
         self.universe = Universe(self.settings.universe, self.rest)
         self.pump_detector = PumpDetector(
@@ -69,7 +69,7 @@ class Engine:
         self.outcome_tracker: OutcomeTracker | None = None
 
         self.stream_manager = StreamManager(
-            self.settings.binance.ws_url, self._on_ws_message
+            self.settings.exchange.ws_url, self._on_ws_message
         )
 
         self.symbols: list[str] = []
@@ -171,12 +171,14 @@ class Engine:
         await self.stream_manager.start(streams)
 
     def _build_stream_list(self, symbols: list[str]) -> list[str]:
+        # Bybit linear topics. The WS connector translates these into the
+        # Binance-shaped payloads the message router below already parses.
         streams: list[str] = []
         for s in symbols:
-            sym = s.lower()
-            streams.append(f"{sym}@aggTrade")
-            streams.append(f"{sym}@kline_1m")
-            streams.append(f"{sym}@markPrice@1s")
+            sym = s.upper()
+            streams.append(f"publicTrade.{sym}")
+            streams.append(f"kline.1.{sym}")
+            streams.append(f"tickers.{sym}")
         return streams
 
     # ------------- background loops -------------
@@ -224,19 +226,13 @@ class Engine:
             await asyncio.sleep(300)
 
     async def _oi_polling_loop(self) -> None:
-        """Open interest doesn't have a free public WS — poll REST every 60s."""
+        """Open interest doesn't have a public WS feed — poll REST every 60s."""
         while not self._stopping.is_set():
-            try:
-                snapshot = await self.rest.book_ticker()  # cheap to ride along
-                _ = snapshot  # noop today; placeholder for spread analytics
-            except Exception:
-                pass
-
             sem = asyncio.Semaphore(8)
             async def poll(sym: str, _sem: asyncio.Semaphore = sem) -> None:
                 async with _sem:
                     try:
-                        data = await self.rest.open_interest(sym)
+                        data = await self.rest.oi(sym)
                         oi = float(data.get("openInterest", 0.0))
                         ts = int(data.get("time") or now_ms())
                         st = self.state.get(sym)

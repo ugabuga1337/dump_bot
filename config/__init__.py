@@ -3,6 +3,7 @@
 from .settings import (
     BinanceConfig,
     DashboardConfig,
+    ExchangeConfig,
     OutcomeConfig,
     PumpConfig,
     RegimeConfig,
@@ -15,7 +16,8 @@ from .settings import (
 )
 
 __all__ = [
-    "BinanceConfig",
+    "ExchangeConfig",
+    "BinanceConfig",  # legacy alias
     "DashboardConfig",
     "OutcomeConfig",
     "PumpConfig",

@@ -11,7 +11,7 @@ import math
 from typing import Any
 
 from config import RegimeConfig
-from connectors import BinanceFuturesREST
+from connectors import BybitFuturesREST
 
 from .models import MarketRegime
 
@@ -19,7 +19,7 @@ log = logging.getLogger("regime")
 
 
 class MarketRegimeDetector:
-    def __init__(self, cfg: RegimeConfig, rest: BinanceFuturesREST) -> None:
+    def __init__(self, cfg: RegimeConfig, rest: BybitFuturesREST) -> None:
         self._cfg = cfg
         self._rest = rest
         self.regime: MarketRegime = MarketRegime.NEUTRAL

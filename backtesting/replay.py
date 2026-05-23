@@ -18,7 +18,7 @@ import logging
 from dataclasses import dataclass
 
 from config import get_settings
-from connectors import BinanceFuturesREST
+from connectors import BybitFuturesREST
 from core.market_regime import MarketRegimeDetector
 from core.models import Kline
 from core.state import SymbolStateData
@@ -41,7 +41,7 @@ class BacktestResult:
 class Backtester:
     def __init__(self, settings=None) -> None:
         self.settings = settings or get_settings()
-        self.rest = BinanceFuturesREST(self.settings.binance.rest_url)
+        self.rest = BybitFuturesREST(self.settings.exchange.rest_url)
         self.regime = MarketRegimeDetector(self.settings.regime, self.rest)
         self.pump = PumpDetector(self.settings.pump, self.regime)
         self.exhaustion = ExhaustionScorer(min_confirmations=2)  # relax for klines-only
@@ -49,12 +49,15 @@ class Backtester:
         self.scorer = ConfidenceScorer(self.settings.signal, self.regime)
 
     async def fetch_klines(self, symbol: str, *, days: int = 7) -> list[Kline]:
-        """Pull up to ``days`` of 1m klines (Binance returns max 1500 per call)."""
+        """Pull up to ``days`` of 1m klines (Bybit returns max 1000 per call)."""
+        page_size = 1000
         klines: list[Kline] = []
-        end = None
-        rounds = max(1, (days * 1440 // 1500) + 1)
+        end: int | None = None
+        rounds = max(1, (days * 1440 // page_size) + 1)
         for _ in range(rounds):
-            batch = await self.rest.klines(symbol, interval="1m", limit=1500, end_time=end)
+            batch = await self.rest.klines(
+                symbol, interval="1m", limit=page_size, end_time=end
+            )
             if not batch:
                 break
             for row in batch:
@@ -66,8 +69,10 @@ class Backtester:
                     trades=int(row[8]), taker_buy_vol=float(row[9]),
                     closed=True,
                 ))
+            # Klines are returned in chronological order — paginate backward
+            # by anchoring the next ``end`` to just before the oldest bar.
             end = int(batch[0][0]) - 1
-            if len(batch) < 1500:
+            if len(batch) < page_size:
                 break
         klines.sort(key=lambda k: k.open_ms)
         return klines
