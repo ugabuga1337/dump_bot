@@ -103,8 +103,11 @@ def setup_logging(level: str | int | None = None, *, json_output: bool | None = 
     root.addHandler(handler)
     root.setLevel(level if isinstance(level, int) else level.upper())
 
-    # Silence chatty libraries.
-    for noisy in ("websockets", "websockets.client", "uvicorn.access", "asyncio"):
+    # Silence chatty libraries. Keep ``websockets`` at WARNING for normal
+    # noise, but allow ``websockets.client`` through at INFO so handshake
+    # failures (the most likely failure mode when transport breaks) reach
+    # the logs instead of being silently dropped.
+    for noisy in ("websockets", "uvicorn.access", "asyncio"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 

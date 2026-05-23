@@ -124,6 +124,12 @@ class Engine:
             asyncio.create_task(self._oi_polling_loop(), name="oi-polling"),
             asyncio.create_task(self._market_snapshot_loop(), name="market-snapshot"),
         ])
+        # Yield so every freshly-scheduled task (WS shards included) gets
+        # to its first await BEFORE start() returns. Without this the
+        # caller may immediately enter a long await (``stop_event.wait()``)
+        # which is fine, but on uvloop we've observed WS shard tasks
+        # remain in the ``pending`` set across multiple snapshot ticks.
+        await asyncio.sleep(0)
 
         log.info("engine_started", extra={"symbols": len(self.symbols)})
 
@@ -161,7 +167,9 @@ class Engine:
 
         Sequential, but with bounded concurrency to keep RAM low on a 1GB VPS.
         """
+        log.info("warmup_starting", extra={"symbols": len(self.symbols)})
         sem = asyncio.Semaphore(6)
+
         async def fetch(sym: str, _sem: asyncio.Semaphore = sem) -> None:
             async with _sem:
                 try:
@@ -172,6 +180,10 @@ class Engine:
                 st = self.state[sym]
                 for k in klines:
                     st.push_kline(_kline_from_rest(k))
+                # Cheap, but 120 symbols × 60 klines × push_kline adds up;
+                # explicitly yield so we don't starve other tasks while
+                # gather() drains.
+                await asyncio.sleep(0)
 
         await asyncio.gather(*(fetch(s) for s in self.symbols))
         log.info("warmup_complete")
@@ -194,10 +206,19 @@ class Engine:
     # ------------- background loops -------------
 
     async def _heartbeat_loop(self) -> None:
+        # mkdir + write_text are sync syscalls — small but they DO block
+        # the event loop. On a stressed VPS with disk pressure that's
+        # enough to delay newly-scheduled WS tasks. Push them to the
+        # default thread executor so the loop stays free.
+        loop = asyncio.get_running_loop()
+
+        def _write() -> None:
+            self._heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
+            self._heartbeat_path.write_text(str(int(time.time())))
+
         while not self._stopping.is_set():
             try:
-                self._heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
-                self._heartbeat_path.write_text(str(int(time.time())))
+                await loop.run_in_executor(None, _write)
             except Exception as exc:  # noqa: BLE001
                 log.debug("heartbeat_write_failed", extra={"err": repr(exc)})
             await asyncio.sleep(20)

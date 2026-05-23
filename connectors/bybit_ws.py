@@ -142,10 +142,19 @@ class BybitWSClient:
     # ---------- internals ----------
 
     async def _run(self) -> None:
+        # Emit this BEFORE anything else so we can prove from logs that the
+        # task is actually getting scheduled by the event loop. If you see
+        # ``stream_manager_started`` but never ``ws_task_started`` for the
+        # same shard, the loop is starving the task (something is hogging
+        # the loop with sync work).
+        log.info("ws_task_started",
+                 extra={"name": self._name, "topics": len(self._topics),
+                        "url": self._ws_url})
         backoff = 1.0
         while not self._stopping.is_set():
             ping_task: asyncio.Task | None = None
             try:
+                log.info("ws_connecting", extra={"name": self._name})
                 async with websockets.connect(
                     self._ws_url,
                     open_timeout=20.0,
