@@ -1,12 +1,12 @@
-"""Binance Futures WebSocket multiplexed client.
+"""Bybit v5 public WebSocket multiplexed client (USDT linear perpetuals).
 
-Subscribes to per-symbol combined streams (aggTrade, kline_1m, markPrice@1s)
-on a single websocket connection (or sharded if the universe grows past a
-practical URL length). Auto-reconnects with exponential backoff and exposes a
-push-style ``on_message`` callback.
+Subscribes to per-symbol topics (``publicTrade.<SYM>``, ``kline.1.<SYM>``,
+``tickers.<SYM>``) over the linear public stream. Auto-reconnects with
+exponential backoff, sends Bybit's application-level pings every 20 s,
+and exposes a push-style ``on_message`` callback.
 
-Designed to be cheap: one async task per connection, decoded payloads
-delivered into in-memory state — no JSON copying beyond ``orjson.loads``.
+One async task per connection; payloads are delivered into in-memory
+state — no JSON copying beyond ``orjson.loads``.
 """
 
 from __future__ import annotations
@@ -27,47 +27,58 @@ try:
         if isinstance(b, str):
             b = b.encode()
         return _json.loads(b)
+
+    def _dumps(o: Any) -> str:
+        return _json.dumps(o).decode()
 except ImportError:  # pragma: no cover
     import json as _json_std
 
     def _loads(b: bytes | str) -> Any:
         return _json_std.loads(b if isinstance(b, str) else b.decode())
 
-
-log = logging.getLogger("binance.ws")
-
-
-# Conservative URL-length budget. Each stream is ~25 chars; 200 streams ≈ 5KB.
-MAX_STREAMS_PER_CONN = 180
+    def _dumps(o: Any) -> str:
+        return _json_std.dumps(o, separators=(",", ":"))
 
 
-class BinanceWSClient:
-    """One websocket connection consuming a set of streams.
+log = logging.getLogger("bybit.ws")
+
+
+# Bybit linear public allows up to 200 topics per connection (per their docs).
+# Stay well under that to leave headroom for ticker upgrades.
+MAX_TOPICS_PER_CONN = 180
+
+# A single subscribe frame can carry up to 10 topics.
+MAX_TOPICS_PER_FRAME = 10
+
+# Bybit drops idle connections after 30s without a ping.
+PING_INTERVAL_SEC = 20.0
+
+
+class BybitWSClient:
+    """One websocket connection consuming a set of Bybit topics.
 
     Hardened against the typical failure modes:
     - connection_closed / DNS / timeouts -> reconnect with jitter
-    - silent connection (no messages) -> ping/pong (websockets handles default)
-    - explicit Binance 24h drop -> reconnect immediately
+    - silent connection (no messages) -> application ping every 20s
+    - server disconnect (24h, idle) -> reconnect immediately
     """
 
     def __init__(
         self,
-        ws_base: str,
-        streams: Sequence[str],
+        ws_url: str,
+        topics: Sequence[str],
         on_message: Callable[[dict[str, Any]], Awaitable[None]],
         *,
         name: str = "ws",
-        ping_interval: float = 20.0,
-        ping_timeout: float = 20.0,
+        ping_interval: float = PING_INTERVAL_SEC,
     ) -> None:
-        if not streams:
-            raise ValueError("at least one stream required")
-        self._ws_base = ws_base.rstrip("/")
-        self._streams = list(streams)
+        if not topics:
+            raise ValueError("at least one topic required")
+        self._ws_url = ws_url
+        self._topics = list(topics)
         self._on_message = on_message
         self._name = name
         self._ping_interval = ping_interval
-        self._ping_timeout = ping_timeout
 
         self._task: asyncio.Task | None = None
         self._stopping = asyncio.Event()
@@ -99,10 +110,14 @@ class BinanceWSClient:
     def connected(self) -> bool:
         return self._connected.is_set()
 
+    @property
+    def streams(self) -> list[str]:
+        return list(self._topics)
+
     def stats(self) -> dict[str, Any]:
         return {
             "name": self._name,
-            "streams": len(self._streams),
+            "streams": len(self._topics),
             "messages": self._msg_count,
             "reconnects": self._reconnects,
             "connected": self.connected,
@@ -111,28 +126,35 @@ class BinanceWSClient:
 
     # ---------- internals ----------
 
-    def _build_url(self) -> str:
-        joined = "/".join(self._streams)
-        return f"{self._ws_base}/stream?streams={joined}"
-
     async def _run(self) -> None:
         backoff = 1.0
         while not self._stopping.is_set():
-            url = self._build_url()
+            ping_task: asyncio.Task | None = None
             try:
                 async with websockets.connect(
-                    url,
-                    ping_interval=self._ping_interval,
-                    ping_timeout=self._ping_timeout,
+                    self._ws_url,
                     open_timeout=20.0,
                     close_timeout=5.0,
-                    max_size=2**20,  # 1MB max frame is plenty for futures public
+                    max_size=2**20,
                     compression=None,
+                    # We send our own application-level pings; disable the
+                    # protocol-level keepalive so Bybit doesn't see two
+                    # competing heartbeats.
+                    ping_interval=None,
                 ) as ws:
                     self._connected.set()
                     backoff = 1.0
                     log.info("ws_connected",
-                             extra={"name": self._name, "streams": len(self._streams)})
+                             extra={"name": self._name, "topics": len(self._topics)})
+
+                    # Subscribe in chunks of MAX_TOPICS_PER_FRAME.
+                    for chunk in _chunks(self._topics, MAX_TOPICS_PER_FRAME):
+                        await ws.send(_dumps({"op": "subscribe", "args": list(chunk)}))
+
+                    ping_task = asyncio.create_task(
+                        self._ping_loop(ws), name=f"ws-ping-{self._name}"
+                    )
+
                     async for raw in ws:
                         if self._stopping.is_set():
                             break
@@ -141,6 +163,23 @@ class BinanceWSClient:
                         except Exception:  # noqa: BLE001 — robust to corrupt frames
                             log.warning("ws_decode_failed", extra={"name": self._name})
                             continue
+
+                        # Control frames: subscribe ack / pong / errors.
+                        if isinstance(payload, dict) and "topic" not in payload:
+                            op = payload.get("op")
+                            if op in ("subscribe", "pong", "auth", "ping"):
+                                if op == "subscribe" and payload.get("success") is False:
+                                    log.warning(
+                                        "ws_subscribe_failed",
+                                        extra={"name": self._name,
+                                               "ret_msg": payload.get("ret_msg")},
+                                    )
+                                continue
+                            # Unknown control message — log once but don't break.
+                            log.debug("ws_ctrl_msg",
+                                      extra={"name": self._name, "payload": payload})
+                            continue
+
                         self._msg_count += 1
                         self._last_msg_ts = asyncio.get_event_loop().time()
                         await self._safe_dispatch(payload)
@@ -153,44 +192,63 @@ class BinanceWSClient:
             except Exception as exc:  # noqa: BLE001
                 log.warning("ws_error", extra={"name": self._name, "err": repr(exc)})
             finally:
+                if ping_task is not None:
+                    ping_task.cancel()
+                    try:
+                        await ping_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
                 self._connected.clear()
 
             if self._stopping.is_set():
                 return
             self._reconnects += 1
-            # Exponential backoff with jitter; capped to keep tasks responsive.
             wait = min(30.0, backoff) + random.uniform(0.0, 0.5)
             await asyncio.sleep(wait)
             backoff = min(30.0, backoff * 2)
+
+    async def _ping_loop(self, ws: Any) -> None:
+        try:
+            while True:
+                await asyncio.sleep(self._ping_interval)
+                await ws.send(_dumps({"op": "ping"}))
+        except (asyncio.CancelledError, ConnectionClosed):
+            return
+        except Exception as exc:  # noqa: BLE001
+            log.debug("ws_ping_failed", extra={"name": self._name, "err": repr(exc)})
 
     async def _safe_dispatch(self, payload: dict[str, Any]) -> None:
         try:
             await self._on_message(payload)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 — never let a callback kill the loop
+        except Exception as exc:  # noqa: BLE001
             log.error("ws_dispatch_error",
                       extra={"name": self._name, "err": repr(exc)}, exc_info=True)
 
 
-class StreamManager:
-    """Owns a fleet of BinanceWSClient connections, sharded by stream count.
+def _chunks(seq: Sequence[str], n: int) -> list[list[str]]:
+    return [list(seq[i : i + n]) for i in range(0, len(seq), n)]
 
-    Re-shards transparently when ``update_streams`` is called with a new symbol
-    set — typically on universe refresh.
+
+class StreamManager:
+    """Owns a fleet of BybitWSClient connections, sharded by topic count.
+
+    Re-shards transparently when ``update_streams`` is called with a new
+    topic set — typically on universe refresh.
     """
 
     def __init__(
         self,
-        ws_base: str,
+        ws_url: str,
         on_message: Callable[[dict[str, Any]], Awaitable[None]],
     ) -> None:
-        self._ws_base = ws_base
+        self._ws_url = ws_url
         self._on_message = on_message
-        self._clients: list[BinanceWSClient] = []
+        self._clients: list[BybitWSClient] = []
 
     @property
-    def clients(self) -> list[BinanceWSClient]:
+    def clients(self) -> list[BybitWSClient]:
         return list(self._clients)
 
     async def start(self, streams: Sequence[str]) -> None:
@@ -203,25 +261,24 @@ class StreamManager:
 
     async def update_streams(self, streams: Sequence[str]) -> None:
         wanted = set(streams)
-        current = {s for c in self._clients for s in c._streams}  # noqa: SLF001
+        current = {s for c in self._clients for s in c.streams}
         if wanted == current and self._clients:
             return
 
         await self.stop()
 
-        # Shard the list into chunks of MAX_STREAMS_PER_CONN.
         chunks = [
-            list(streams)[i : i + MAX_STREAMS_PER_CONN]
-            for i in range(0, len(streams), MAX_STREAMS_PER_CONN)
+            list(streams)[i : i + MAX_TOPICS_PER_CONN]
+            for i in range(0, len(streams), MAX_TOPICS_PER_CONN)
         ]
         for idx, chunk in enumerate(chunks):
-            client = BinanceWSClient(
-                self._ws_base, chunk, self._on_message, name=f"shard{idx}"
+            client = BybitWSClient(
+                self._ws_url, chunk, self._on_message, name=f"shard{idx}"
             )
             self._clients.append(client)
             client.start()
         log.info("stream_manager_started",
-                 extra={"shards": len(chunks), "streams": len(streams)})
+                 extra={"shards": len(chunks), "topics": len(streams)})
 
     def stats(self) -> list[dict[str, Any]]:
         return [c.stats() for c in self._clients]

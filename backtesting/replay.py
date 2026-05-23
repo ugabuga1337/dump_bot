@@ -18,7 +18,7 @@ import logging
 from dataclasses import dataclass
 
 from config import get_settings
-from connectors import BinanceFuturesREST
+from connectors import BybitFuturesREST
 from core.market_regime import MarketRegimeDetector
 from core.models import Kline
 from core.state import SymbolStateData
@@ -41,7 +41,10 @@ class BacktestResult:
 class Backtester:
     def __init__(self, settings=None) -> None:
         self.settings = settings or get_settings()
-        self.rest = BinanceFuturesREST(self.settings.binance.rest_url)
+        self.rest = BybitFuturesREST(
+            self.settings.bybit.rest_url,
+            category=self.settings.bybit.category,
+        )
         self.regime = MarketRegimeDetector(self.settings.regime, self.rest)
         self.pump = PumpDetector(self.settings.pump, self.regime)
         self.exhaustion = ExhaustionScorer(min_confirmations=2)  # relax for klines-only
@@ -49,12 +52,13 @@ class Backtester:
         self.scorer = ConfidenceScorer(self.settings.signal, self.regime)
 
     async def fetch_klines(self, symbol: str, *, days: int = 7) -> list[Kline]:
-        """Pull up to ``days`` of 1m klines (Binance returns max 1500 per call)."""
+        """Pull up to ``days`` of 1m klines (Bybit returns max 1000 per call)."""
         klines: list[Kline] = []
         end = None
-        rounds = max(1, (days * 1440 // 1500) + 1)
+        per_call = 1000
+        rounds = max(1, (days * 1440 // per_call) + 1)
         for _ in range(rounds):
-            batch = await self.rest.klines(symbol, interval="1m", limit=1500, end_time=end)
+            batch = await self.rest.klines(symbol, interval="1m", limit=per_call, end_time=end)
             if not batch:
                 break
             for row in batch:
@@ -67,7 +71,7 @@ class Backtester:
                     closed=True,
                 ))
             end = int(batch[0][0]) - 1
-            if len(batch) < 1500:
+            if len(batch) < per_call:
                 break
         klines.sort(key=lambda k: k.open_ms)
         return klines
