@@ -2,6 +2,7 @@
 
 from .settings import (
     BinanceConfig,
+    BybitConfig,
     DashboardConfig,
     OutcomeConfig,
     PumpConfig,
@@ -16,6 +17,7 @@ from .settings import (
 
 __all__ = [
     "BinanceConfig",
+    "BybitConfig",
     "DashboardConfig",
     "OutcomeConfig",
     "PumpConfig",

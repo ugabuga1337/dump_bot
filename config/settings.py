@@ -59,11 +59,17 @@ def _env_list(name: str, default: list[str] | None = None) -> list[str]:
 
 
 @dataclass(slots=True, frozen=True)
-class BinanceConfig:
-    rest_url: str = "https://fapi.binance.com"
-    ws_url: str = "wss://fstream.binance.com"
-    ws_combined: str = "wss://fstream.binance.com/stream"
+class BybitConfig:
+    rest_url: str = "https://api.bybit.com"
+    ws_url: str = "wss://stream.bybit.com/v5/public/linear"
+    category: str = "linear"
     # Read-only operation; we don't use private endpoints anywhere.
+
+
+# Backwards-compatible alias — old code (and tests) may still import
+# ``BinanceConfig``. The transport is Bybit; the alias just avoids a
+# wide rename.
+BinanceConfig = BybitConfig
 
 
 @dataclass(slots=True, frozen=True)
@@ -141,7 +147,7 @@ class Settings:
     data_dir: Path
     db_path: Path
     timezone: str
-    binance: BinanceConfig
+    bybit: BybitConfig
     universe: UniverseConfig
     pump: PumpConfig
     signal: SignalConfig
@@ -180,11 +186,13 @@ class Settings:
             data_dir=data_dir,
             db_path=db_path,
             timezone=_env("TIMEZONE", "UTC") or "UTC",
-            binance=BinanceConfig(
-                rest_url=_env("BINANCE_FUTURES_REST", "https://fapi.binance.com") or "",
-                ws_url=_env("BINANCE_FUTURES_WS", "wss://fstream.binance.com") or "",
-                ws_combined=_env("BINANCE_FUTURES_WS_COMBINED",
-                                 "wss://fstream.binance.com/stream") or "",
+            bybit=BybitConfig(
+                rest_url=_env("BYBIT_FUTURES_REST", "https://api.bybit.com") or "",
+                ws_url=_env(
+                    "BYBIT_FUTURES_WS",
+                    "wss://stream.bybit.com/v5/public/linear",
+                ) or "",
+                category=(_env("BYBIT_CATEGORY", "linear") or "linear").lower(),
             ),
             universe=UniverseConfig(
                 quote_asset=(_env("QUOTE_ASSET", "USDT") or "USDT").upper(),

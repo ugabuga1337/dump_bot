@@ -11,7 +11,7 @@ import logging
 from typing import Any
 
 from config import UniverseConfig
-from connectors import BinanceFuturesREST
+from connectors import BybitFuturesREST
 
 log = logging.getLogger("universe")
 
@@ -28,7 +28,7 @@ def _looks_leveraged(symbol: str, base: str) -> bool:
 
 
 class Universe:
-    def __init__(self, cfg: UniverseConfig, rest: BinanceFuturesREST) -> None:
+    def __init__(self, cfg: UniverseConfig, rest: BybitFuturesREST) -> None:
         self._cfg = cfg
         self._rest = rest
         self._symbols: list[str] = []

@@ -21,7 +21,7 @@ import time
 from typing import Any
 
 from config import Settings, get_settings
-from connectors import BinanceFuturesREST, StreamManager
+from connectors import BybitFuturesREST, StreamManager
 from core.market_regime import MarketRegimeDetector
 from core.models import (
     Kline,
@@ -44,7 +44,10 @@ class Engine:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
         weights = self.settings.raw_yaml or {}
-        self.rest = BinanceFuturesREST(self.settings.binance.rest_url)
+        self.rest = BybitFuturesREST(
+            self.settings.bybit.rest_url,
+            category=self.settings.bybit.category,
+        )
         self.regime = MarketRegimeDetector(self.settings.regime, self.rest)
         self.universe = Universe(self.settings.universe, self.rest)
         self.pump_detector = PumpDetector(
@@ -69,7 +72,7 @@ class Engine:
         self.outcome_tracker: OutcomeTracker | None = None
 
         self.stream_manager = StreamManager(
-            self.settings.binance.ws_url, self._on_ws_message
+            self.settings.bybit.ws_url, self._on_ws_message
         )
 
         self.symbols: list[str] = []
@@ -105,6 +108,13 @@ class Engine:
 
         await self._warmup_klines()
         await self._start_streams()
+        # Force one event-loop turn so the freshly-created WS shard tasks
+        # actually begin their ``websockets.connect`` await BEFORE the rest
+        # of startup (telegram, watchdog, background loops) piles on. Without
+        # this yield the shard tasks can sit pending while the snapshot /
+        # OI loops claim every subsequent loop turn, and shards stay stuck
+        # at ``connected: False`` indefinitely.
+        await asyncio.sleep(0)
         await self.telegram.start()
 
         self._tasks.extend([
@@ -114,6 +124,12 @@ class Engine:
             asyncio.create_task(self._oi_polling_loop(), name="oi-polling"),
             asyncio.create_task(self._market_snapshot_loop(), name="market-snapshot"),
         ])
+        # Yield so every freshly-scheduled task (WS shards included) gets
+        # to its first await BEFORE start() returns. Without this the
+        # caller may immediately enter a long await (``stop_event.wait()``)
+        # which is fine, but on uvloop we've observed WS shard tasks
+        # remain in the ``pending`` set across multiple snapshot ticks.
+        await asyncio.sleep(0)
 
         log.info("engine_started", extra={"symbols": len(self.symbols)})
 
@@ -151,7 +167,9 @@ class Engine:
 
         Sequential, but with bounded concurrency to keep RAM low on a 1GB VPS.
         """
+        log.info("warmup_starting", extra={"symbols": len(self.symbols)})
         sem = asyncio.Semaphore(6)
+
         async def fetch(sym: str, _sem: asyncio.Semaphore = sem) -> None:
             async with _sem:
                 try:
@@ -162,6 +180,10 @@ class Engine:
                 st = self.state[sym]
                 for k in klines:
                     st.push_kline(_kline_from_rest(k))
+                # Cheap, but 120 symbols × 60 klines × push_kline adds up;
+                # explicitly yield so we don't starve other tasks while
+                # gather() drains.
+                await asyncio.sleep(0)
 
         await asyncio.gather(*(fetch(s) for s in self.symbols))
         log.info("warmup_complete")
@@ -171,21 +193,32 @@ class Engine:
         await self.stream_manager.start(streams)
 
     def _build_stream_list(self, symbols: list[str]) -> list[str]:
+        # Bybit topics are upper-cased symbol-suffixed and use a dot separator.
+        # publicTrade.<SYM>, kline.1.<SYM>, tickers.<SYM>
         streams: list[str] = []
         for s in symbols:
-            sym = s.lower()
-            streams.append(f"{sym}@aggTrade")
-            streams.append(f"{sym}@kline_1m")
-            streams.append(f"{sym}@markPrice@1s")
+            sym = s.upper()
+            streams.append(f"publicTrade.{sym}")
+            streams.append(f"kline.1.{sym}")
+            streams.append(f"tickers.{sym}")
         return streams
 
     # ------------- background loops -------------
 
     async def _heartbeat_loop(self) -> None:
+        # mkdir + write_text are sync syscalls — small but they DO block
+        # the event loop. On a stressed VPS with disk pressure that's
+        # enough to delay newly-scheduled WS tasks. Push them to the
+        # default thread executor so the loop stays free.
+        loop = asyncio.get_running_loop()
+
+        def _write() -> None:
+            self._heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
+            self._heartbeat_path.write_text(str(int(time.time())))
+
         while not self._stopping.is_set():
             try:
-                self._heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
-                self._heartbeat_path.write_text(str(int(time.time())))
+                await loop.run_in_executor(None, _write)
             except Exception as exc:  # noqa: BLE001
                 log.debug("heartbeat_write_failed", extra={"err": repr(exc)})
             await asyncio.sleep(20)
@@ -224,7 +257,15 @@ class Engine:
             await asyncio.sleep(300)
 
     async def _oi_polling_loop(self) -> None:
-        """Open interest doesn't have a free public WS — poll REST every 60s."""
+        """Open interest doesn't have a free public WS — poll REST every 60s.
+
+        Delay the first iteration so the freshly-launched WS shards get a
+        clean window to finish their TLS + WS handshakes before this loop
+        fans out ~120 concurrent REST calls into the same aiohttp pool.
+        """
+        # Give WS shards a head start on connecting; tickers stream will
+        # also start pushing openInterest deltas long before this elapses.
+        await asyncio.sleep(15)
         while not self._stopping.is_set():
             try:
                 snapshot = await self.rest.book_ticker()  # cheap to ride along
@@ -284,62 +325,131 @@ class Engine:
     # ------------- WS message router -------------
 
     async def _on_ws_message(self, payload: dict[str, Any]) -> None:
+        """Bybit v5 public envelope::
+
+            {"topic": "<channel>.<...>.<SYMBOL>",
+             "type": "snapshot" | "delta",
+             "ts": 1700000000000,
+             "data": ... }
+
+        ``data`` is a list for publicTrade/kline and a dict for tickers.
+        Tickers payloads are delta-merged so missing fields are unchanged.
+        """
         self._messages_seen += 1
-        # combined stream payload: {"stream": "btcusdt@aggTrade", "data": {...}}
-        stream = payload.get("stream", "")
-        data = payload.get("data") or payload
-        if not stream:
+        topic = payload.get("topic")
+        if not topic or not isinstance(topic, str):
             return
-        # We don't bother parsing the stream string — go by the event type
-        ev = data.get("e")
-        symbol = data.get("s") or stream.split("@", 1)[0].upper()
+        data = payload.get("data")
+        # Topic format: "<channel>.<...>.<SYMBOL>" — symbol is the last segment.
+        parts = topic.split(".")
+        if len(parts) < 2:
+            return
+        channel = parts[0]
+        symbol = parts[-1].upper()
 
         st = self.state.get(symbol)
         if st is None:
             return
 
         try:
-            if ev == "aggTrade":
-                t = TradePrint(
-                    ts_ms=int(data["T"]),
-                    price=float(data["p"]),
-                    qty=float(data["q"]),
-                    is_buyer_maker=bool(data.get("m", False)),
-                )
-                st.push_trade(t)
-                # feed outcome tracker on any tick (cheap)
-                if self.outcome_tracker is not None and symbol in self.outcome_tracker.tracked_symbols():
-                    await self.outcome_tracker.on_price(symbol, t.price, t.ts_ms)
-            elif ev == "kline":
-                k_raw = data["k"]
-                k = Kline(
-                    open_ms=int(k_raw["t"]),
-                    close_ms=int(k_raw["T"]),
-                    open=float(k_raw["o"]),
-                    high=float(k_raw["h"]),
-                    low=float(k_raw["l"]),
-                    close=float(k_raw["c"]),
-                    volume=float(k_raw["v"]),
-                    quote_volume=float(k_raw["q"]),
-                    trades=int(k_raw["n"]),
-                    taker_buy_vol=float(k_raw["V"]),
-                    closed=bool(k_raw["x"]),
-                )
-                st.push_kline(k)
-                # Re-evaluate on candle close (cheap, deterministic)
-                if k.closed:
+            if channel == "publicTrade":
+                if not isinstance(data, list):
+                    return
+                last_trade: TradePrint | None = None
+                for row in data:
+                    side = row.get("S") or ""
+                    # Bybit "S" is the taker's side. If the taker is a seller
+                    # the buyer was the resting maker -> is_buyer_maker = True.
+                    is_buyer_maker = side.upper() == "SELL"
+                    t = TradePrint(
+                        ts_ms=int(row.get("T") or 0),
+                        price=float(row.get("p") or 0.0),
+                        qty=float(row.get("v") or 0.0),
+                        is_buyer_maker=is_buyer_maker,
+                    )
+                    if t.price <= 0 or t.qty <= 0:
+                        continue
+                    st.push_trade(t)
+                    last_trade = t
+                if (
+                    last_trade is not None
+                    and self.outcome_tracker is not None
+                    and symbol in self.outcome_tracker.tracked_symbols()
+                ):
+                    await self.outcome_tracker.on_price(
+                        symbol, last_trade.price, last_trade.ts_ms
+                    )
+            elif channel == "kline":
+                if not isinstance(data, list):
+                    return
+                fire_evaluate = False
+                for k_raw in data:
+                    k = Kline(
+                        open_ms=int(k_raw.get("start") or 0),
+                        close_ms=int(k_raw.get("end") or 0),
+                        open=float(k_raw.get("open") or 0.0),
+                        high=float(k_raw.get("high") or 0.0),
+                        low=float(k_raw.get("low") or 0.0),
+                        close=float(k_raw.get("close") or 0.0),
+                        volume=float(k_raw.get("volume") or 0.0),
+                        quote_volume=float(k_raw.get("turnover") or 0.0),
+                        # Bybit doesn't publish per-candle trade count or
+                        # taker-buy split on public WS. Strategy already
+                        # tolerates zeros (used as proxies, not invariants).
+                        trades=0,
+                        taker_buy_vol=0.0,
+                        closed=bool(k_raw.get("confirm", False)),
+                    )
+                    st.push_kline(k)
+                    if k.closed:
+                        fire_evaluate = True
+                if fire_evaluate:
                     await self._evaluate(symbol)
-            elif ev == "markPriceUpdate":
-                m = MarkPriceTick(
-                    ts_ms=int(data["E"]),
-                    mark_price=float(data["p"]),
-                    index_price=float(data["i"]),
-                    funding_rate=float(data["r"]),
-                    next_funding_ms=int(data.get("T") or 0),
-                )
-                st.push_mark(m)
+            elif channel == "tickers":
+                if not isinstance(data, dict):
+                    return
+                prev = st.last_mark
+                ts_ms = int(payload.get("ts") or now_ms())
+                # Pull each field if present, fall back to prior tick.
+                mark = data.get("markPrice")
+                index = data.get("indexPrice")
+                funding = data.get("fundingRate")
+                next_funding = data.get("nextFundingTime")
+                try:
+                    mark_v = float(mark) if mark is not None else (
+                        prev.mark_price if prev else 0.0
+                    )
+                    index_v = float(index) if index is not None else (
+                        prev.index_price if prev else 0.0
+                    )
+                    funding_v = float(funding) if funding is not None else (
+                        prev.funding_rate if prev else 0.0
+                    )
+                    next_v = int(next_funding) if next_funding is not None else (
+                        prev.next_funding_ms if prev else 0
+                    )
+                except (TypeError, ValueError):
+                    return
+                if mark_v <= 0:
+                    return
+                st.push_mark(MarkPriceTick(
+                    ts_ms=ts_ms,
+                    mark_price=mark_v,
+                    index_price=index_v,
+                    funding_rate=funding_v,
+                    next_funding_ms=next_v,
+                ))
+                # Bybit publishes openInterest on the tickers stream too —
+                # it's cheaper to grab it here than to wait for the REST poll.
+                oi_raw = data.get("openInterest")
+                if oi_raw is not None:
+                    try:
+                        st.push_oi(ts_ms, float(oi_raw))
+                    except (TypeError, ValueError):
+                        pass
         except Exception as exc:  # noqa: BLE001
-            log.debug("ws_payload_parse_failed", extra={"err": repr(exc), "ev": ev})
+            log.debug("ws_payload_parse_failed",
+                      extra={"err": repr(exc), "topic": topic})
 
     # ------------- evaluation pipeline -------------
 
