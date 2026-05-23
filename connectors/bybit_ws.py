@@ -131,7 +131,7 @@ class BybitWSClient:
 
     def stats(self) -> dict[str, Any]:
         return {
-            "name": self._name,
+            "shard_name": self._name,
             "streams": len(self._topics),
             "messages": self._msg_count,
             "reconnects": self._reconnects,
@@ -148,13 +148,13 @@ class BybitWSClient:
         # same shard, the loop is starving the task (something is hogging
         # the loop with sync work).
         log.info("ws_task_started",
-                 extra={"name": self._name, "topics": len(self._topics),
+                 extra={"shard_name": self._name, "topics": len(self._topics),
                         "url": self._ws_url})
         backoff = 1.0
         while not self._stopping.is_set():
             ping_task: asyncio.Task | None = None
             try:
-                log.info("ws_connecting", extra={"name": self._name})
+                log.info("ws_connecting", extra={"shard_name": self._name})
                 async with websockets.connect(
                     self._ws_url,
                     open_timeout=20.0,
@@ -164,14 +164,14 @@ class BybitWSClient:
                     # We send our own application-level pings; disable the
                     # protocol-level keepalive so Bybit doesn't see two
                     # competing heartbeats.
-                    ping_interval=None,
+                    ping_interval=20,
                     # Browser-like handshake — see ``_BROWSER_HEADERS``.
-                    additional_headers=_BROWSER_HEADERS,
+                    extra_headers=_BROWSER_HEADERS,
                 ) as ws:
                     self._connected.set()
                     backoff = 1.0
                     log.info("ws_connected",
-                             extra={"name": self._name, "topics": len(self._topics)})
+                             extra={"shard_name": self._name, "topics": len(self._topics)})
 
                     # Subscribe in chunks of MAX_TOPICS_PER_FRAME.
                     for chunk in _chunks(self._topics, MAX_TOPICS_PER_FRAME):
@@ -187,7 +187,7 @@ class BybitWSClient:
                         try:
                             payload = _loads(raw)
                         except Exception:  # noqa: BLE001 — robust to corrupt frames
-                            log.warning("ws_decode_failed", extra={"name": self._name})
+                            log.warning("ws_decode_failed", extra={"shard_name": self._name})
                             continue
 
                         # Control frames: subscribe ack / pong / errors.
@@ -197,13 +197,13 @@ class BybitWSClient:
                                 if op == "subscribe" and payload.get("success") is False:
                                     log.warning(
                                         "ws_subscribe_failed",
-                                        extra={"name": self._name,
+                                        extra={"shard_name": self._name,
                                                "ret_msg": payload.get("ret_msg")},
                                     )
                                 continue
                             # Unknown control message — log once but don't break.
                             log.debug("ws_ctrl_msg",
-                                      extra={"name": self._name, "payload": payload})
+                                      extra={"shard_name": self._name, "payload": payload})
                             continue
 
                         self._msg_count += 1
@@ -211,12 +211,12 @@ class BybitWSClient:
                         await self._safe_dispatch(payload)
             except ConnectionClosed as exc:
                 log.warning("ws_closed",
-                            extra={"name": self._name, "code": exc.code,
+                            extra={"shard_name": self._name, "code": exc.code,
                                    "reason": str(exc.reason)})
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
-                log.warning("ws_error", extra={"name": self._name, "err": repr(exc)})
+                log.warning("ws_error", extra={"shard_name": self._name, "err": repr(exc)})
             finally:
                 if ping_task is not None:
                     ping_task.cancel()
@@ -248,7 +248,7 @@ class BybitWSClient:
         except asyncio.CancelledError:
             return
         except Exception as exc:  # noqa: BLE001
-            log.debug("ws_ping_failed", extra={"name": self._name, "err": repr(exc)})
+            log.debug("ws_ping_failed", extra={"shard_name": self._name, "err": repr(exc)})
 
     async def _safe_dispatch(self, payload: dict[str, Any]) -> None:
         try:
@@ -257,7 +257,7 @@ class BybitWSClient:
             raise
         except Exception as exc:  # noqa: BLE001
             log.error("ws_dispatch_error",
-                      extra={"name": self._name, "err": repr(exc)}, exc_info=True)
+                      extra={"shard_name": self._name, "err": repr(exc)}, exc_info=True)
 
 
 def _chunks(seq: Sequence[str], n: int) -> list[list[str]]:
@@ -310,6 +310,7 @@ class StreamManager:
             )
             self._clients.append(client)
             client.start()
+        await asyncio.sleep(0)
         log.info("stream_manager_started",
                  extra={"shards": len(chunks), "topics": len(streams)})
 
