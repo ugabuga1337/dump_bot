@@ -40,6 +40,24 @@ log = logging.getLogger("binance.ws")
 # Conservative URL-length budget. Each stream is ~25 chars; 200 streams ≈ 5KB.
 MAX_STREAMS_PER_CONN = 180
 
+# Browser-like headers. Binance Futures (fstream.binance.com) is known to accept
+# the WebSocket upgrade from clients with the default ``Python/x websockets/y``
+# User-Agent but then never push frames — the connection looks alive but stays
+# silent until ping_timeout expires. Presenting as a regular browser session
+# (with Origin matching the binance.com web app) makes the stream behave like
+# it does on the testnet.
+_DEFAULT_HEADERS: dict[str, str] = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Origin": "https://www.binance.com",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+}
+
 
 class BinanceWSClient:
     """One websocket connection consuming a set of streams.
@@ -59,6 +77,7 @@ class BinanceWSClient:
         name: str = "ws",
         ping_interval: float = 20.0,
         ping_timeout: float = 20.0,
+        stale_after: float = 60.0,
     ) -> None:
         if not streams:
             raise ValueError("at least one stream required")
@@ -68,6 +87,10 @@ class BinanceWSClient:
         self._name = name
         self._ping_interval = ping_interval
         self._ping_timeout = ping_timeout
+        # Force a reconnect if no frames arrive in this many seconds — guards
+        # against the "silent connection" failure mode where the upgrade
+        # succeeds but Binance never pushes data.
+        self._stale_after = stale_after
 
         self._task: asyncio.Task | None = None
         self._stopping = asyncio.Event()
@@ -128,13 +151,26 @@ class BinanceWSClient:
                     close_timeout=5.0,
                     max_size=2**20,  # 1MB max frame is plenty for futures public
                     compression=None,
+                    extra_headers=_DEFAULT_HEADERS,
                 ) as ws:
                     self._connected.set()
                     backoff = 1.0
                     log.info("ws_connected",
                              extra={"name": self._name, "streams": len(self._streams)})
-                    async for raw in ws:
-                        if self._stopping.is_set():
+                    while not self._stopping.is_set():
+                        try:
+                            raw = await asyncio.wait_for(
+                                ws.recv(), timeout=self._stale_after
+                            )
+                        except asyncio.TimeoutError:
+                            # Silent connection — drop it and let the outer
+                            # loop reconnect. Don't trust the socket past this.
+                            log.warning(
+                                "ws_stale",
+                                extra={"name": self._name,
+                                       "stale_after": self._stale_after},
+                            )
+                            await ws.close(code=1000, reason="stale")
                             break
                         try:
                             payload = _loads(raw)
