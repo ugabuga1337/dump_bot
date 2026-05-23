@@ -53,6 +53,21 @@ MAX_TOPICS_PER_FRAME = 10
 # Bybit drops idle connections after 30s without a ping.
 PING_INTERVAL_SEC = 20.0
 
+# Bybit's WS endpoint sits behind a CDN that silently drops connections
+# with the default Python websockets handshake. Pretend to be a browser.
+# Without these headers, the WS task gets stuck in ``websockets.connect``
+# with no exception until ``open_timeout`` fires — and once enough other
+# concurrent work is running in the engine, even that timeout doesn't
+# trigger reliably. Sending a real-looking UA + Origin makes the
+# handshake complete in <1s, matching what wscat / a browser would do.
+_BROWSER_HEADERS: dict[str, str] = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Origin": "https://www.bybit.com",
+}
+
 
 class BybitWSClient:
     """One websocket connection consuming a set of Bybit topics.
@@ -141,6 +156,8 @@ class BybitWSClient:
                     # protocol-level keepalive so Bybit doesn't see two
                     # competing heartbeats.
                     ping_interval=None,
+                    # Browser-like handshake — see ``_BROWSER_HEADERS``.
+                    additional_headers=_BROWSER_HEADERS,
                 ) as ws:
                     self._connected.set()
                     backoff = 1.0
@@ -208,11 +225,18 @@ class BybitWSClient:
             backoff = min(30.0, backoff * 2)
 
     async def _ping_loop(self, ws: Any) -> None:
+        # Send the first ping immediately so Bybit's 30s idle-disconnect
+        # never fires before our keepalive cadence kicks in — important on
+        # cold start when subscribe acks and the first publish may take
+        # several seconds.
         try:
             while True:
+                try:
+                    await ws.send(_dumps({"op": "ping"}))
+                except ConnectionClosed:
+                    return
                 await asyncio.sleep(self._ping_interval)
-                await ws.send(_dumps({"op": "ping"}))
-        except (asyncio.CancelledError, ConnectionClosed):
+        except asyncio.CancelledError:
             return
         except Exception as exc:  # noqa: BLE001
             log.debug("ws_ping_failed", extra={"name": self._name, "err": repr(exc)})

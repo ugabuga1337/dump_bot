@@ -108,6 +108,13 @@ class Engine:
 
         await self._warmup_klines()
         await self._start_streams()
+        # Force one event-loop turn so the freshly-created WS shard tasks
+        # actually begin their ``websockets.connect`` await BEFORE the rest
+        # of startup (telegram, watchdog, background loops) piles on. Without
+        # this yield the shard tasks can sit pending while the snapshot /
+        # OI loops claim every subsequent loop turn, and shards stay stuck
+        # at ``connected: False`` indefinitely.
+        await asyncio.sleep(0)
         await self.telegram.start()
 
         self._tasks.extend([
@@ -229,7 +236,15 @@ class Engine:
             await asyncio.sleep(300)
 
     async def _oi_polling_loop(self) -> None:
-        """Open interest doesn't have a free public WS — poll REST every 60s."""
+        """Open interest doesn't have a free public WS — poll REST every 60s.
+
+        Delay the first iteration so the freshly-launched WS shards get a
+        clean window to finish their TLS + WS handshakes before this loop
+        fans out ~120 concurrent REST calls into the same aiohttp pool.
+        """
+        # Give WS shards a head start on connecting; tickers stream will
+        # also start pushing openInterest deltas long before this elapses.
+        await asyncio.sleep(15)
         while not self._stopping.is_set():
             try:
                 snapshot = await self.rest.book_ticker()  # cheap to ride along
