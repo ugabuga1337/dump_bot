@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+{% block title %}Paper Trading · Dump Bot{% endblock %}
+{% block heading %}Paper trading{% endblock %}
+{% block content %}
+<div class="content">
+    <div class="card">
+        <div class="card-header">
+            <h3>Strategies</h3>
+            <button type="button" class="btn-accent" onclick="openStrategyModal()">+ New strategy</button>
+        </div>
+        <div id="strategies-table"
+             hx-get="/api/fragments/paper/strategies"
+             hx-trigger="load, paperStrategiesChanged from:body"
+             hx-swap="innerHTML">
+            <p class="muted">loading…</p>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>Open positions</h3>
+        <div id="open-trades"
+             hx-get="/api/fragments/paper/open"
+             hx-trigger="load, every 15s"
+             hx-swap="innerHTML">
+            <p class="muted">loading…</p>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>Equity curve</h3>
+        <canvas id="equity-chart" height="120"></canvas>
+    </div>
+
+    <div class="card">
+        <h3>Trade history</h3>
+        <div id="history-trades"
+             hx-get="/api/fragments/paper/history?limit=100"
+             hx-trigger="load, every 30s"
+             hx-swap="innerHTML">
+            <p class="muted">loading…</p>
+        </div>
+    </div>
+</div>
+
+<!-- Strategy modal -->
+<div id="strategy-modal" class="modal" hidden>
+    <div class="modal-card">
+        <h3 id="strategy-modal-title">New strategy</h3>
+        <form id="strategy-form" onsubmit="submitStrategy(event)">
+            <input type="hidden" name="id" value="">
+            <label>Name <input name="name" required maxlength="64"></label>
+            <label>Deposit (USD) <input type="number" name="deposit" step="any" min="0" value="1000"></label>
+            <label>Size (% of deposit) <input type="number" name="size_pct" step="any" min="0.01" max="100" value="10"></label>
+            <label>SL multiplier <input type="number" name="sl_mult" step="any" min="0.01" max="10" value="1"></label>
+            <label>TP1 multiplier <input type="number" name="tp1_mult" step="any" min="0.01" max="10" value="1"></label>
+            <label>TP2 multiplier <input type="number" name="tp2_mult" step="any" min="0.01" max="10" value="1"></label>
+            <label>Min confidence <input type="number" name="min_confidence" step="any" min="0" max="100" value="55"></label>
+            <label class="checkbox">
+                <input type="checkbox" name="active" checked> Active
+            </label>
+            <div class="modal-actions">
+                <button type="button" onclick="closeStrategyModal()">Cancel</button>
+                <button type="submit" class="btn-accent">Save</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function openStrategyModal(strategy) {
+    const modal = document.getElementById('strategy-modal');
+    const form = document.getElementById('strategy-form');
+    form.reset();
+    form.id.value = '';
+    if (strategy) {
+        document.getElementById('strategy-modal-title').textContent = 'Edit strategy';
+        form.id.value = strategy.id;
+        form.name.value = strategy.name;
+        form.deposit.value = strategy.deposit;
+        form.size_pct.value = strategy.size_pct;
+        form.sl_mult.value = strategy.sl_mult;
+        form.tp1_mult.value = strategy.tp1_mult;
+        form.tp2_mult.value = strategy.tp2_mult;
+        form.min_confidence.value = strategy.min_confidence;
+        form.active.checked = !!strategy.active;
+    } else {
+        document.getElementById('strategy-modal-title').textContent = 'New strategy';
+    }
+    modal.hidden = false;
+}
+function closeStrategyModal() {
+    document.getElementById('strategy-modal').hidden = true;
+}
+async function editStrategy(id) {
+    const resp = await fetch(`/api/paper/strategies/${id}`);
+    if (!resp.ok) return;
+    const s = await resp.json();
+    openStrategyModal(s);
+}
+async function submitStrategy(ev) {
+    ev.preventDefault();
+    const form = ev.target;
+    const id = form.id.value;
+    const payload = {
+        name: form.name.value,
+        deposit: parseFloat(form.deposit.value),
+        size_pct: parseFloat(form.size_pct.value),
+        sl_mult: parseFloat(form.sl_mult.value),
+        tp1_mult: parseFloat(form.tp1_mult.value),
+        tp2_mult: parseFloat(form.tp2_mult.value),
+        min_confidence: parseFloat(form.min_confidence.value),
+        active: form.active.checked,
+    };
+    const url = id ? `/api/paper/strategies/${id}` : '/api/paper/strategies';
+    const method = id ? 'PUT' : 'POST';
+    const resp = await fetch(url, {
+        method: method,
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+    });
+    if (resp.ok) {
+        closeStrategyModal();
+        htmx.trigger('body', 'paperStrategiesChanged');
+        refreshEquity();
+    } else {
+        alert('Save failed: ' + (await resp.text()));
+    }
+}
+async function deleteStrategy(id) {
+    if (!confirm('Delete strategy and all of its trades?')) return;
+    const resp = await fetch(`/api/paper/strategies/${id}`, {method: 'DELETE'});
+    if (resp.ok) {
+        htmx.trigger('body', 'paperStrategiesChanged');
+        refreshEquity();
+    }
+}
+async function toggleStrategy(id) {
+    const resp = await fetch(`/api/paper/strategies/${id}/toggle`, {method: 'PATCH'});
+    if (resp.ok) htmx.trigger('body', 'paperStrategiesChanged');
+}
+
+let equityChart = null;
+const palette = ['#fbbf24', '#34d399', '#7dd3fc', '#f87171', '#a78bfa', '#fb7185', '#facc15', '#22d3ee'];
+async function refreshEquity() {
+    if (typeof Chart === 'undefined') return;
+    const resp = await fetch('/api/paper/equity');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const datasets = data.map((s, idx) => ({
+        label: s.name,
+        data: s.points.map((p, i) => ({
+            x: p.ts_ms ? new Date(p.ts_ms).toISOString() : null,
+            y: p.balance,
+        })).filter(p => p.x),
+        borderColor: palette[idx % palette.length],
+        backgroundColor: palette[idx % palette.length] + '33',
+        tension: 0.2,
+        fill: false,
+    }));
+    const ctx = document.getElementById('equity-chart').getContext('2d');
+    if (equityChart) equityChart.destroy();
+    equityChart = new Chart(ctx, {
+        type: 'line',
+        data: {datasets},
+        options: {
+            responsive: true,
+            interaction: {mode: 'index', intersect: false},
+            scales: {
+                x: {type: 'time', ticks: {color: '#9ca3af'}, grid: {color: '#25252e'}},
+                y: {ticks: {color: '#9ca3af'}, grid: {color: '#25252e'}, title: {display: true, text: 'USD'}},
+            },
+            plugins: {legend: {labels: {color: '#e5e7eb'}}},
+        },
+    });
+}
+document.addEventListener('DOMContentLoaded', () => {
+    setTimeout(refreshEquity, 300);
+    setInterval(refreshEquity, 30_000);
+    document.body.addEventListener('paperStrategiesChanged', refreshEquity);
+});
+</script>
+{% endblock %}

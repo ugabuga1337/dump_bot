@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Settings · Dump Bot{% endblock %}
+{% block heading %}Settings{% endblock %}
+{% block content %}
+<div class="card">
+    <h3>Gainer scanner</h3>
+    <p class="muted">
+        Live-editable parameters. Saved to the SQLite ``bot_settings`` table and
+        re-read by the engine on every scan cycle — no restart required.
+    </p>
+    <form id="settings-form" class="filters" onsubmit="saveSettings(event)">
+        <label>GAINER_SCAN_INTERVAL_SEC
+            <input type="number" name="GAINER_SCAN_INTERVAL_SEC" min="1" step="1" value="60">
+        </label>
+        <label>GAINER_MIN_PCT
+            <input type="number" name="GAINER_MIN_PCT" step="any" value="5">
+        </label>
+        <label>GAINER_TOP_N
+            <input type="number" name="GAINER_TOP_N" min="1" step="1" value="50">
+        </label>
+        <label>GAINER_DROP_AFTER_CYCLES
+            <input type="number" name="GAINER_DROP_AFTER_CYCLES" min="1" step="1" value="3">
+        </label>
+        <div style="display:flex;align-items:end;">
+            <button type="submit" class="btn-accent">Save</button>
+        </div>
+    </form>
+    <p id="settings-status" class="muted"></p>
+</div>
+
+<script>
+const SETTING_KEYS = [
+    'GAINER_SCAN_INTERVAL_SEC',
+    'GAINER_MIN_PCT',
+    'GAINER_TOP_N',
+    'GAINER_DROP_AFTER_CYCLES',
+];
+
+async function loadSettings() {
+    const resp = await fetch('/api/settings');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const form = document.getElementById('settings-form');
+    for (const key of SETTING_KEYS) {
+        if (data[key] !== undefined) {
+            form.elements[key].value = data[key];
+        }
+    }
+}
+async function saveSettings(ev) {
+    ev.preventDefault();
+    const form = ev.target;
+    const status = document.getElementById('settings-status');
+    status.textContent = 'saving…';
+    for (const key of SETTING_KEYS) {
+        const value = form.elements[key].value;
+        const resp = await fetch(`/api/settings/${key}`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({value: value}),
+        });
+        if (!resp.ok) {
+            status.textContent = `Failed to save ${key}: ${await resp.text()}`;
+            return;
+        }
+    }
+    status.textContent = 'Saved ' + new Date().toLocaleTimeString();
+}
+document.addEventListener('DOMContentLoaded', loadSettings);
+</script>
+{% endblock %}

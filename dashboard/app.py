@@ -100,6 +100,18 @@ def create_app() -> FastAPI:
             request, "patterns.html", {"section": "patterns"},
         )
 
+    @app.get("/paper")
+    async def paper_page(request: Request):
+        return templates.TemplateResponse(
+            request, "paper.html", {"section": "paper"},
+        )
+
+    @app.get("/settings")
+    async def settings_page(request: Request):
+        return templates.TemplateResponse(
+            request, "settings.html", {"section": "settings"},
+        )
+
     @app.get("/healthz")
     async def healthz():
         return {"ok": True, "uptime": int(time.time() - app.state.started_at)}

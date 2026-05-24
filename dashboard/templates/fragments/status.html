@@ -1,7 +1,15 @@
 {% set status = status %}
-{% set ws_total = (status.ws | length) if status.ws else 0 %}
-{% set ws_ok = status.ws | selectattr('connected') | list | length if status.ws else 0 %}
+{% set ws_total = status.ws_total or 0 %}
+{% set ws_ok = status.ws_connected or 0 %}
+{% set ws_down = status.ws_down or 0 %}
 <div class="status-block">
+    <div class="row"><span class="lbl">WS</span>
+        {% if ws_total > 0 and ws_down == 0 %}
+        <span class="ws-pill ok">UP {{ ws_ok }}/{{ ws_total }}</span>
+        {% else %}
+        <span class="ws-pill down">WS DOWN ({{ ws_down }}/{{ ws_total }} shard{{ 's' if ws_down != 1 else '' }} disconnected)</span>
+        {% endif %}
+    </div>
     <div class="row"><span class="lbl">Regime</span>
         <span class="val regime-{{ (status.regime or 'neutral')|lower }}">{{ status.regime or '—' }}</span>
     </div>
@@ -14,8 +22,14 @@
     <div class="row"><span class="lbl">Overheated</span>
         <span class="val">{{ status.overheated or 0 }}</span>
     </div>
-    <div class="row"><span class="lbl">WS shards</span>
-        <span class="val">{{ ws_ok }}/{{ ws_total }}</span>
+    <div class="row"><span class="lbl">Monitored</span>
+        <span class="val">{{ status.monitored if status.monitored is not none else '—' }}</span>
+    </div>
+    <div class="row"><span class="lbl">WATCH</span>
+        <span class="val">{{ status.watch_count if status.watch_count is not none else '—' }}</span>
+    </div>
+    <div class="row"><span class="lbl">COOLDOWN</span>
+        <span class="val">{{ status.cooldown_count if status.cooldown_count is not none else '—' }}</span>
     </div>
     <div class="row"><span class="lbl">Signals total</span>
         <span class="val">{{ status.signals_emitted_total or 0 }}</span>

@@ -199,6 +199,92 @@ table.signals .loss { color: var(--red); }
 }
 .login-card button:hover { opacity: .9; }
 
+.card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+.card-header h3 { margin: 0; }
+button, .btn-accent, .btn-danger {
+    background: var(--panel-2);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 10px;
+    cursor: pointer;
+    font-size: 12px;
+    margin-left: 4px;
+}
+button:hover { background: var(--border); }
+.btn-accent {
+    background: var(--accent);
+    color: #1a1a22;
+    border-color: var(--accent);
+}
+.btn-accent:hover { opacity: .9; background: var(--accent); }
+.btn-danger {
+    background: var(--red);
+    color: #1a1a22;
+    border-color: var(--red);
+}
+.btn-danger:hover { opacity: .85; background: var(--red); }
+
+.modal {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+}
+.modal[hidden] { display: none; }
+.modal-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 22px 26px;
+    width: 420px;
+    max-width: 92vw;
+}
+.modal-card h3 { margin: 0 0 14px 0; color: var(--accent); }
+.modal-card form { display: flex; flex-direction: column; gap: 10px; }
+.modal-card label {
+    display: flex; flex-direction: column;
+    font-size: 12px; color: var(--muted); gap: 4px;
+}
+.modal-card input {
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    color: var(--fg);
+    padding: 6px 8px;
+    border-radius: 6px;
+    font-size: 13px;
+}
+.modal-card label.checkbox {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    color: var(--fg);
+}
+.modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.ws-pill {
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 11px;
+    letter-spacing: .04em;
+}
+.ws-pill.ok { background: rgba(52, 211, 153, .15); color: var(--green); }
+.ws-pill.down { background: rgba(248, 113, 113, .18); color: var(--red); }
+
 /* Mobile */
 @media (max-width: 720px) {
     .sidebar {

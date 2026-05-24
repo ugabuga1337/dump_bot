@@ -1,0 +1,32 @@
+{% if not trades %}
+<p class="muted">No open positions.</p>
+{% else %}
+<table class="signals">
+    <thead>
+        <tr>
+            <th>Symbol</th>
+            <th>Strategy</th>
+            <th>Opened</th>
+            <th>Entry</th>
+            <th>SL</th>
+            <th>TP1</th>
+            <th>TP2</th>
+            <th>Size USD</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for t in trades %}
+        <tr>
+            <td><code>{{ t.symbol }}</code></td>
+            <td>{{ t.strategy_name or t.strategy_id }}</td>
+            <td>{{ t.opened_ms | ts }}</td>
+            <td>{{ t.entry_price | price }}</td>
+            <td>{{ t.sl_price | price }}</td>
+            <td>{{ t.tp1_price | price }}</td>
+            <td>{{ t.tp2_price | price }}</td>
+            <td>{{ '%.2f'|format(t.size_usd or 0) }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}

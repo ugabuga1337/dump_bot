@@ -9,7 +9,8 @@ import json
 import time
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 
 from storage import Repository
 
@@ -50,6 +51,12 @@ async def api_status(request: Request, repo: Repository = Depends(get_repo)):
     last_sig = await repo.list_signals(limit=1)
     cooldowns = []
     metadata = _parse_json(snap.get("metadata_json"), {}) if snap else {}
+    ws_list = metadata.get("ws_shards") if metadata else []
+    ws_list = ws_list or []
+    ws_total = len(ws_list)
+    ws_connected = sum(1 for s in ws_list if s.get("connected"))
+    ws_down = ws_total - ws_connected
+    ws_ok = ws_total > 0 and ws_down == 0
     return {
         "uptime_sec": int(time.time() - request.app.state.started_at),
         "regime": snap.get("btc_regime") if snap else None,
@@ -57,11 +64,18 @@ async def api_status(request: Request, repo: Repository = Depends(get_repo)):
         "btc_trend_pct": snap.get("btc_trend_pct") if snap else None,
         "btc_atr_pct": snap.get("btc_atr_pct") if snap else None,
         "overheated": snap.get("overheated_count") if snap else None,
-        "ws": metadata.get("ws_shards") if metadata else [],
+        "ws": ws_list,
+        "ws_total": ws_total,
+        "ws_connected": ws_connected,
+        "ws_down": ws_down,
+        "ws_ok": ws_ok,
         "telegram": metadata.get("telegram") if metadata else {},
         "signals_emitted_total": metadata.get("signals_emitted") if metadata else None,
         "pumps_detected_total": metadata.get("pumps_detected") if metadata else None,
         "messages_seen": metadata.get("messages_seen") if metadata else None,
+        "monitored": metadata.get("monitored") if metadata else None,
+        "watch_count": metadata.get("watch_count") if metadata else None,
+        "cooldown_count": metadata.get("cooldown_count") if metadata else None,
         "last_signal": _enrich_signal(last_sig[0]) if last_sig else None,
         "snapshot_age_sec": int(time.time() - (snap.get("ts_ms", 0) / 1000)) if snap and snap.get("ts_ms") else None,
         "active_cooldowns": cooldowns,
@@ -205,3 +219,200 @@ async def fragment_patterns(request: Request,
     return templates.TemplateResponse(
         request, "fragments/patterns_table.html", {"patterns": rows},
     )
+
+
+# ---------- Paper trading ----------
+
+
+class PaperStrategyIn(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    deposit: float = Field(default=1000.0, ge=0.0)
+    size_pct: float = Field(default=10.0, gt=0.0, le=100.0)
+    sl_mult: float = Field(default=1.0, gt=0.0, le=10.0)
+    tp1_mult: float = Field(default=1.0, gt=0.0, le=10.0)
+    tp2_mult: float = Field(default=1.0, gt=0.0, le=10.0)
+    min_confidence: float = Field(default=55.0, ge=0.0, le=100.0)
+    active: bool = True
+
+
+@api_router.get("/paper/strategies")
+async def api_paper_strategies(repo: Repository = Depends(get_repo)):
+    rows = await repo.paper_strategy_summary()
+    return rows
+
+
+@api_router.get("/paper/strategies/{strategy_id}")
+async def api_paper_strategy_get(
+    strategy_id: int,
+    repo: Repository = Depends(get_repo),
+):
+    row = await repo.get_paper_strategy(strategy_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="strategy not found")
+    return row
+
+
+@api_router.post("/paper/strategies")
+async def api_paper_strategies_create(
+    payload: PaperStrategyIn,
+    repo: Repository = Depends(get_repo),
+):
+    data = payload.model_dump()
+    data["active"] = 1 if data.pop("active") else 0
+    try:
+        new_id = await repo.insert_paper_strategy(data)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"db_error: {exc!r}") from exc
+    return {"id": new_id, **data}
+
+
+@api_router.put("/paper/strategies/{strategy_id}")
+async def api_paper_strategies_update(
+    strategy_id: int,
+    payload: PaperStrategyIn,
+    repo: Repository = Depends(get_repo),
+):
+    existing = await repo.get_paper_strategy(strategy_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="strategy not found")
+    data = payload.model_dump()
+    data["active"] = 1 if data.pop("active") else 0
+    try:
+        await repo.update_paper_strategy(strategy_id, data)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"db_error: {exc!r}") from exc
+    return {"id": strategy_id, **data}
+
+
+@api_router.delete("/paper/strategies/{strategy_id}")
+async def api_paper_strategies_delete(
+    strategy_id: int,
+    repo: Repository = Depends(get_repo),
+):
+    existing = await repo.get_paper_strategy(strategy_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="strategy not found")
+    await repo.delete_paper_strategy(strategy_id)
+    return {"deleted": strategy_id}
+
+
+@api_router.patch("/paper/strategies/{strategy_id}/toggle")
+async def api_paper_strategies_toggle(
+    strategy_id: int,
+    repo: Repository = Depends(get_repo),
+):
+    existing = await repo.get_paper_strategy(strategy_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="strategy not found")
+    new_active = await repo.toggle_paper_strategy(strategy_id)
+    return {"id": strategy_id, "active": new_active}
+
+
+@api_router.get("/paper/trades")
+async def api_paper_trades(
+    repo: Repository = Depends(get_repo),
+    strategy_id: int | None = None,
+    status: str | None = None,
+    symbol: str | None = None,
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+):
+    return await repo.list_paper_trades(
+        strategy_id=strategy_id,
+        status=status,
+        symbol=symbol,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@api_router.get("/paper/equity")
+async def api_paper_equity(
+    repo: Repository = Depends(get_repo),
+    strategy_id: int | None = None,
+):
+    curve = await repo.paper_equity_curve(strategy_id=strategy_id)
+    out = []
+    for sid, info in curve.items():
+        out.append({
+            "strategy_id": sid,
+            "name": info["name"],
+            "deposit": info["deposit"],
+            "points": info["points"],
+        })
+    return out
+
+
+@api_router.get("/paper/summary")
+async def api_paper_summary(repo: Repository = Depends(get_repo)):
+    rows = await repo.paper_strategy_summary()
+    total_realized = sum(float(r.get("realized_pnl") or 0.0) for r in rows)
+    total_deposit = sum(float(r.get("deposit") or 0.0) for r in rows)
+    return {
+        "strategies": rows,
+        "total_realized_pnl": round(total_realized, 4),
+        "total_deposit": round(total_deposit, 4),
+        "total_balance": round(total_deposit + total_realized, 4),
+    }
+
+
+@api_router.get("/fragments/paper/strategies")
+async def fragment_paper_strategies(
+    request: Request,
+    repo: Repository = Depends(get_repo),
+):
+    rows = await repo.paper_strategy_summary()
+    return templates.TemplateResponse(
+        request, "fragments/paper_strategies.html", {"strategies": rows},
+    )
+
+
+@api_router.get("/fragments/paper/open")
+async def fragment_paper_open(
+    request: Request,
+    repo: Repository = Depends(get_repo),
+):
+    trades = await repo.list_paper_trades(status="open", limit=200)
+    # Try to enrich with current price = last close from signals row.
+    return templates.TemplateResponse(
+        request, "fragments/paper_open.html", {"trades": trades},
+    )
+
+
+@api_router.get("/fragments/paper/history")
+async def fragment_paper_history(
+    request: Request,
+    repo: Repository = Depends(get_repo),
+    strategy_id: int | None = None,
+    limit: int = Query(100, ge=1, le=1000),
+):
+    trades = await repo.list_paper_trades(
+        strategy_id=strategy_id, status="closed", limit=limit
+    )
+    return templates.TemplateResponse(
+        request, "fragments/paper_history.html", {"trades": trades},
+    )
+
+
+# ---------- Bot settings ----------
+
+
+class BotSettingIn(BaseModel):
+    value: str = Field(max_length=256)
+
+
+@api_router.get("/settings")
+async def api_get_settings(repo: Repository = Depends(get_repo)):
+    return await repo.list_bot_settings()
+
+
+@api_router.put("/settings/{key}")
+async def api_set_setting(
+    key: str,
+    payload: BotSettingIn,
+    repo: Repository = Depends(get_repo),
+):
+    if len(key) > 64 or not key.replace("_", "").isalnum():
+        raise HTTPException(status_code=400, detail="invalid key")
+    await repo.set_bot_setting(key, payload.value)
+    return {"key": key, "value": payload.value}

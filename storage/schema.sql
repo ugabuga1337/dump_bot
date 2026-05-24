@@ -110,3 +110,48 @@ CREATE TABLE IF NOT EXISTS stats_daily (
     avg_adverse_pct REAL,
     avg_confidence REAL
 );
+
+-- ---------- Paper trading ----------
+
+CREATE TABLE IF NOT EXISTS paper_strategies (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    deposit     REAL NOT NULL DEFAULT 1000.0,
+    size_pct    REAL NOT NULL DEFAULT 10.0,   -- % of deposit per trade
+    sl_mult     REAL NOT NULL DEFAULT 1.0,    -- SL multiplier vs signal
+    tp1_mult    REAL NOT NULL DEFAULT 1.0,    -- TP1 multiplier vs signal
+    tp2_mult    REAL NOT NULL DEFAULT 1.0,
+    min_confidence REAL NOT NULL DEFAULT 55.0,
+    active      INTEGER NOT NULL DEFAULT 1,
+    created_ms  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS paper_trades (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy_id     INTEGER NOT NULL REFERENCES paper_strategies(id) ON DELETE CASCADE,
+    signal_id       INTEGER NOT NULL REFERENCES signals(id) ON DELETE CASCADE,
+    symbol          TEXT NOT NULL,
+    opened_ms       INTEGER NOT NULL,
+    closed_ms       INTEGER,
+    entry_price     REAL NOT NULL,
+    sl_price        REAL NOT NULL,
+    tp1_price       REAL NOT NULL,
+    tp2_price       REAL NOT NULL,
+    size_usd        REAL NOT NULL,
+    close_price     REAL,
+    close_reason    TEXT,
+    pnl_usd         REAL,
+    pnl_pct         REAL,
+    status          TEXT NOT NULL DEFAULT 'open'
+);
+
+CREATE INDEX IF NOT EXISTS idx_paper_trades_strategy ON paper_trades(strategy_id, opened_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_paper_trades_status ON paper_trades(status);
+CREATE INDEX IF NOT EXISTS idx_paper_trades_signal ON paper_trades(signal_id);
+
+-- Generic key-value bot settings (e.g. GAINER_*) editable from dashboard.
+CREATE TABLE IF NOT EXISTS bot_settings (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL,
+    updated_ms  INTEGER NOT NULL
+);

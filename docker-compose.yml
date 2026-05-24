@@ -39,7 +39,10 @@ services:
     ports:
       - "${DASHBOARD_PORT:-8080}:8080"
     volumes:
-      - ./data:/data:ro
+      # rw because the dashboard now owns CRUD for paper_strategies and
+      # bot_settings. SQLite is opened in WAL mode by both processes, so
+      # concurrent reads + writes are safe.
+      - ./data:/data
       - ./config:/app/config:ro
     command: ["python", "-m", "dashboard"]
     mem_limit: 256m
