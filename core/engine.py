@@ -31,7 +31,7 @@ from core.models import (
 )
 from core.state import SymbolStateData
 from core.universe import Universe
-from signals import AntiSpam, ConfidenceScorer, OutcomeTracker
+from signals import AntiSpam, ConfidenceScorer, OutcomeTracker, PaperTrader
 from storage import Database, Repository, open_database
 from strategy import ExhaustionScorer, FakePumpDetector, PumpDetector
 from telegram import TelegramNotifier, format_signal
@@ -67,6 +67,7 @@ class Engine:
         self.db: Database | None = None
         self.repo: Repository | None = None
         self.outcome_tracker: OutcomeTracker | None = None
+        self.paper_trader: PaperTrader | None = None
 
         self.stream_manager = StreamManager(
             self.settings.binance.ws_url, self._on_ws_message
@@ -94,9 +95,13 @@ class Engine:
         self.repo = Repository(self.db)
         self.outcome_tracker = OutcomeTracker(self.settings.outcome, self.repo)
         await self.outcome_tracker.restore_open()
+        self.paper_trader = PaperTrader(self.repo)
+        await self.paper_trader.restore_open()
+        self.outcome_tracker.add_listener(self.paper_trader.on_outcome_finalized)
 
         await self.rest.__aenter__()
         try:
+            await self._apply_gainer_settings()
             await self._initial_universe_refresh()
             await self.regime.refresh()
         except Exception as exc:  # noqa: BLE001
@@ -192,10 +197,12 @@ class Engine:
 
     async def _universe_refresh_loop(self) -> None:
         while not self._stopping.is_set():
-            await asyncio.sleep(self.settings.universe.refresh_minutes * 60)
+            # The scan interval can be overridden live via bot_settings.
+            await asyncio.sleep(await self._gainer_scan_interval())
             if self._stopping.is_set():
                 return
             try:
+                await self._apply_gainer_settings()
                 new_symbols = await self.universe.refresh()
                 if not new_symbols:
                     continue
@@ -214,6 +221,38 @@ class Engine:
                     await self.repo.upsert_symbols(self.universe.export_rows())
             except Exception as exc:  # noqa: BLE001
                 log.warning("universe_refresh_failed", extra={"err": repr(exc)})
+
+    async def _gainer_scan_interval(self) -> float:
+        if self.repo is None:
+            return self.settings.universe.refresh_minutes * 60
+        try:
+            raw = await self.repo.get_bot_setting("GAINER_SCAN_INTERVAL_SEC")
+            if raw:
+                return max(15.0, float(raw))
+        except Exception:  # noqa: BLE001
+            pass
+        return self.settings.universe.refresh_minutes * 60
+
+    async def _apply_gainer_settings(self) -> None:
+        if self.repo is None:
+            return
+        try:
+            settings = await self.repo.list_bot_settings()
+        except Exception:  # noqa: BLE001
+            return
+        top_n: int | None = None
+        min_pct: float | None = None
+        if "GAINER_TOP_N" in settings:
+            try:
+                top_n = max(1, int(float(settings["GAINER_TOP_N"])))
+            except (TypeError, ValueError):
+                top_n = None
+        if "GAINER_MIN_PCT" in settings:
+            try:
+                min_pct = float(settings["GAINER_MIN_PCT"])
+            except (TypeError, ValueError):
+                min_pct = None
+        self.universe.set_overrides(max_symbols=top_n, min_change_pct=min_pct)
 
     async def _regime_refresh_loop(self) -> None:
         while not self._stopping.is_set():
@@ -262,6 +301,14 @@ class Engine:
                         ratios = [r for r in ratios if r > 0]
                         if ratios:
                             vol_avg = sum(ratios) / len(ratios)
+                    watch_count = sum(
+                        1 for st in self.state.values()
+                        if st.state == SymbolState.WATCH
+                    )
+                    cooldown_count = sum(
+                        1 for st in self.state.values()
+                        if st.state == SymbolState.COOLDOWN
+                    )
                     await self.repo.insert_market_snapshot({
                         "btc_price": self.regime.btc_price,
                         "btc_regime": self.regime.regime.value,
@@ -275,6 +322,9 @@ class Engine:
                             "pumps_detected": self._pumps_detected,
                             "ws_shards": self.stream_manager.stats(),
                             "telegram": self.telegram.stats,
+                            "monitored": len(self.symbols),
+                            "watch_count": watch_count,
+                            "cooldown_count": cooldown_count,
                         },
                     })
             except Exception as exc:  # noqa: BLE001
@@ -310,6 +360,8 @@ class Engine:
                 # feed outcome tracker on any tick (cheap)
                 if self.outcome_tracker is not None and symbol in self.outcome_tracker.tracked_symbols():
                     await self.outcome_tracker.on_price(symbol, t.price, t.ts_ms)
+                if self.paper_trader is not None and symbol in self.paper_trader.open_symbols():
+                    await self.paper_trader.on_price(symbol, t.price, t.ts_ms)
             elif ev == "kline":
                 k_raw = data["k"]
                 k = Kline(
@@ -461,6 +513,22 @@ class Engine:
                 suggested_tp1=d.suggested_tp1,
                 suggested_tp2=d.suggested_tp2,
             )
+
+        if self.paper_trader is not None:
+            try:
+                await self.paper_trader.on_signal({
+                    "id": signal_id,
+                    "symbol": d.symbol,
+                    "confidence_score": d.confidence_score,
+                    "price": d.price,
+                    "suggested_entry": d.suggested_entry,
+                    "suggested_sl": d.suggested_sl,
+                    "suggested_tp1": d.suggested_tp1,
+                    "suggested_tp2": d.suggested_tp2,
+                })
+            except Exception as exc:  # noqa: BLE001
+                log.warning("paper_trader_on_signal_failed",
+                            extra={"err": repr(exc), "signal_id": signal_id})
 
     # ------------- introspection -------------
 

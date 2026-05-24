@@ -1,0 +1,49 @@
+{% if not strategies %}
+<p class="muted">No strategies yet. Click "+ New strategy" to create one.</p>
+{% else %}
+<table class="signals">
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Deposit</th>
+            <th>Size %</th>
+            <th>Balance</th>
+            <th>Realized P&L</th>
+            <th>Trades</th>
+            <th>Open</th>
+            <th>Wins / Losses</th>
+            <th>Avg %</th>
+            <th>Status</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for s in strategies %}
+        <tr>
+            <td><code>{{ s.name }}</code></td>
+            <td>{{ '%.2f'|format(s.deposit or 0) }}</td>
+            <td>{{ '%.1f'|format(s.size_pct or 0) }}%</td>
+            <td>{{ '%.2f'|format(s.balance or 0) }}</td>
+            <td class="{% if (s.realized_pnl or 0) > 0 %}win{% elif (s.realized_pnl or 0) < 0 %}loss{% endif %}">
+                {{ '%.2f'|format(s.realized_pnl or 0) }}
+            </td>
+            <td>{{ s.total_trades or 0 }}</td>
+            <td>{{ s.open_trades or 0 }}</td>
+            <td>
+                <span class="win">{{ s.wins or 0 }}</span> /
+                <span class="loss">{{ s.losses or 0 }}</span>
+            </td>
+            <td>{{ '%.2f'|format(s.avg_pnl_pct or 0) }}%</td>
+            <td>
+                {% if s.active %}<span class="win">on</span>{% else %}<span class="muted">off</span>{% endif %}
+            </td>
+            <td>
+                <button type="button" onclick="editStrategy({{ s.id }})">Edit</button>
+                <button type="button" onclick="toggleStrategy({{ s.id }})">{% if s.active %}Disable{% else %}Enable{% endif %}</button>
+                <button type="button" onclick="deleteStrategy({{ s.id }})" class="btn-danger">Delete</button>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}

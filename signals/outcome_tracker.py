@@ -16,12 +16,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from config import OutcomeConfig
 from storage import Repository
 from utils import now_ms
+
+# Callback signature for downstream listeners (e.g. PaperTrader).
+# (signal_id, close_reason, last_price, closed_ms)
+OutcomeListener = Callable[[int, str, float, int], Awaitable[None]]
 
 log = logging.getLogger("outcome")
 
@@ -53,6 +58,10 @@ class OutcomeTracker:
         self._repo = repo
         self._tracked: dict[int, _Tracked] = {}
         self._lock = asyncio.Lock()
+        self._listeners: list[OutcomeListener] = []
+
+    def add_listener(self, listener: OutcomeListener) -> None:
+        self._listeners.append(listener)
 
     async def restore_open(self) -> None:
         """Re-load open outcomes from DB on startup."""
@@ -158,6 +167,17 @@ class OutcomeTracker:
         log.info("outcome",
                  extra={"signal_id": t.signal_id, "symbol": t.symbol, "is_win": int(is_win),
                         "fav_pct": row["max_favorable_pct"], "adv_pct": row["max_adverse_pct"]})
+
+        close_reason = (
+            "sl" if t.hit_sl
+            else ("tp2" if t.hit_tp2 else ("tp1" if t.hit_tp1 else "expired"))
+        )
+        for listener in self._listeners:
+            try:
+                await listener(t.signal_id, close_reason, t.last_price, row["closed_ms"])
+            except Exception as exc:  # noqa: BLE001
+                log.warning("outcome_listener_failed",
+                            extra={"signal_id": t.signal_id, "err": repr(exc)})
 
     def tracked_symbols(self) -> set[str]:
         return {t.symbol for t in self._tracked.values()}

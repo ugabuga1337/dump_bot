@@ -33,6 +33,18 @@ class Universe:
         self._rest = rest
         self._symbols: list[str] = []
         self._symbol_meta: dict[str, dict[str, Any]] = {}
+        # Live overrides — populated from bot_settings on each scan cycle.
+        self._max_symbols_override: int | None = None
+        self._min_change_pct_override: float | None = None
+
+    def set_overrides(
+        self,
+        *,
+        max_symbols: int | None = None,
+        min_change_pct: float | None = None,
+    ) -> None:
+        self._max_symbols_override = max_symbols
+        self._min_change_pct_override = min_change_pct
 
     @property
     def symbols(self) -> list[str]:
@@ -84,6 +96,11 @@ class Universe:
                 continue
             if last_price < self._cfg.min_price:
                 continue
+            if (
+                self._min_change_pct_override is not None
+                and price_change_pct < self._min_change_pct_override
+            ):
+                continue
 
             tradable.append(
                 {
@@ -96,9 +113,14 @@ class Universe:
                 }
             )
 
-        tradable.sort(key=lambda r: r["quote_volume_24h"], reverse=True)
-        if len(tradable) > self._cfg.max_symbols:
-            tradable = tradable[: self._cfg.max_symbols]
+        # When a gainer override is in effect, prefer top-N by 24h change.
+        if self._min_change_pct_override is not None:
+            tradable.sort(key=lambda r: r["price_change_pct"], reverse=True)
+        else:
+            tradable.sort(key=lambda r: r["quote_volume_24h"], reverse=True)
+        cap = self._max_symbols_override or self._cfg.max_symbols
+        if len(tradable) > cap:
+            tradable = tradable[:cap]
 
         self._symbols = [r["symbol"] for r in tradable]
         self._symbol_meta = {r["symbol"]: r for r in tradable}

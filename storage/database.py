@@ -401,6 +401,258 @@ class Repository:
             out.append(d)
         return out
 
+    # ----- paper strategies -----
+
+    async def list_paper_strategies(self, *, only_active: bool = False) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM paper_strategies"
+        if only_active:
+            sql += " WHERE active=1"
+        sql += " ORDER BY id ASC"
+        rows = await self.db.fetch_all(sql)
+        return [dict(r) for r in rows]
+
+    async def get_paper_strategy(self, strategy_id: int) -> dict[str, Any] | None:
+        row = await self.db.fetch_one(
+            "SELECT * FROM paper_strategies WHERE id=?", (strategy_id,)
+        )
+        return dict(row) if row else None
+
+    async def insert_paper_strategy(self, row: dict[str, Any]) -> int:
+        row = dict(row)
+        row.setdefault("created_ms", now_ms())
+        row.setdefault("deposit", 1000.0)
+        row.setdefault("size_pct", 10.0)
+        row.setdefault("sl_mult", 1.0)
+        row.setdefault("tp1_mult", 1.0)
+        row.setdefault("tp2_mult", 1.0)
+        row.setdefault("min_confidence", 55.0)
+        row.setdefault("active", 1)
+        return await self.db.execute(
+            """
+            INSERT INTO paper_strategies(
+                name, deposit, size_pct, sl_mult, tp1_mult, tp2_mult,
+                min_confidence, active, created_ms
+            ) VALUES (
+                :name, :deposit, :size_pct, :sl_mult, :tp1_mult, :tp2_mult,
+                :min_confidence, :active, :created_ms
+            )
+            """,
+            row,
+        )
+
+    async def update_paper_strategy(self, strategy_id: int, fields: dict[str, Any]) -> None:
+        allowed = {
+            "name", "deposit", "size_pct", "sl_mult", "tp1_mult",
+            "tp2_mult", "min_confidence", "active",
+        }
+        sets = []
+        params: list[Any] = []
+        for key, val in fields.items():
+            if key in allowed:
+                sets.append(f"{key}=?")
+                params.append(val)
+        if not sets:
+            return
+        params.append(strategy_id)
+        await self.db.execute(
+            f"UPDATE paper_strategies SET {', '.join(sets)} WHERE id=?",
+            params,
+        )
+
+    async def delete_paper_strategy(self, strategy_id: int) -> None:
+        # Cascade will remove paper_trades.
+        await self.db.execute("DELETE FROM paper_strategies WHERE id=?", (strategy_id,))
+
+    async def toggle_paper_strategy(self, strategy_id: int) -> int:
+        row = await self.db.fetch_one(
+            "SELECT active FROM paper_strategies WHERE id=?", (strategy_id,)
+        )
+        if not row:
+            return 0
+        new_val = 0 if int(row["active"]) else 1
+        await self.db.execute(
+            "UPDATE paper_strategies SET active=? WHERE id=?", (new_val, strategy_id)
+        )
+        return new_val
+
+    # ----- paper trades -----
+
+    async def insert_paper_trade(self, row: dict[str, Any]) -> int:
+        row = dict(row)
+        row.setdefault("opened_ms", now_ms())
+        row.setdefault("status", "open")
+        row.setdefault("close_price", None)
+        row.setdefault("close_reason", None)
+        row.setdefault("closed_ms", None)
+        row.setdefault("pnl_usd", None)
+        row.setdefault("pnl_pct", None)
+        return await self.db.execute(
+            """
+            INSERT INTO paper_trades(
+                strategy_id, signal_id, symbol, opened_ms, closed_ms,
+                entry_price, sl_price, tp1_price, tp2_price, size_usd,
+                close_price, close_reason, pnl_usd, pnl_pct, status
+            ) VALUES (
+                :strategy_id, :signal_id, :symbol, :opened_ms, :closed_ms,
+                :entry_price, :sl_price, :tp1_price, :tp2_price, :size_usd,
+                :close_price, :close_reason, :pnl_usd, :pnl_pct, :status
+            )
+            """,
+            row,
+        )
+
+    async def close_paper_trade(
+        self,
+        trade_id: int,
+        *,
+        close_price: float,
+        close_reason: str,
+        pnl_usd: float,
+        pnl_pct: float,
+        closed_ms: int | None = None,
+    ) -> None:
+        await self.db.execute(
+            """
+            UPDATE paper_trades
+            SET close_price=?, close_reason=?, pnl_usd=?, pnl_pct=?,
+                closed_ms=?, status='closed'
+            WHERE id=? AND status='open'
+            """,
+            (
+                close_price,
+                close_reason,
+                pnl_usd,
+                pnl_pct,
+                closed_ms or now_ms(),
+                trade_id,
+            ),
+        )
+
+    async def list_paper_trades(
+        self,
+        *,
+        strategy_id: int | None = None,
+        status: str | None = None,
+        symbol: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        where = []
+        params: list[Any] = []
+        if strategy_id is not None:
+            where.append("t.strategy_id = ?")
+            params.append(strategy_id)
+        if status:
+            where.append("t.status = ?")
+            params.append(status)
+        if symbol:
+            where.append("t.symbol = ?")
+            params.append(symbol.upper())
+        clause = ("WHERE " + " AND ".join(where)) if where else ""
+        sql = (
+            f"SELECT t.*, s.name AS strategy_name "
+            f"FROM paper_trades t LEFT JOIN paper_strategies s ON s.id=t.strategy_id "
+            f"{clause} ORDER BY t.opened_ms DESC LIMIT ? OFFSET ?"
+        )
+        params.extend([limit, offset])
+        rows = await self.db.fetch_all(sql, params)
+        return [dict(r) for r in rows]
+
+    async def open_paper_trades_for_signal(self, signal_id: int) -> list[dict[str, Any]]:
+        rows = await self.db.fetch_all(
+            "SELECT * FROM paper_trades WHERE signal_id=? AND status='open'",
+            (signal_id,),
+        )
+        return [dict(r) for r in rows]
+
+    async def paper_strategy_summary(self) -> list[dict[str, Any]]:
+        rows = await self.db.fetch_all(
+            """
+            SELECT s.id, s.name, s.deposit, s.size_pct, s.active,
+                   COUNT(t.id) AS total_trades,
+                   SUM(CASE WHEN t.status='open' THEN 1 ELSE 0 END) AS open_trades,
+                   SUM(CASE WHEN t.status='closed' THEN 1 ELSE 0 END) AS closed_trades,
+                   SUM(CASE WHEN t.pnl_usd > 0 THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN t.pnl_usd <= 0 AND t.status='closed' THEN 1 ELSE 0 END) AS losses,
+                   COALESCE(SUM(t.pnl_usd), 0) AS realized_pnl,
+                   AVG(t.pnl_pct) AS avg_pnl_pct
+            FROM paper_strategies s
+            LEFT JOIN paper_trades t ON t.strategy_id = s.id
+            GROUP BY s.id
+            ORDER BY s.id ASC
+            """
+        )
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            d = dict(r)
+            d["balance"] = float(d.get("deposit") or 0.0) + float(d.get("realized_pnl") or 0.0)
+            out.append(d)
+        return out
+
+    async def paper_equity_curve(
+        self,
+        strategy_id: int | None = None,
+    ) -> dict[int, list[dict[str, Any]]]:
+        """Return {strategy_id: [{ts_ms, balance}, ...]} ordered by close time."""
+        params: list[Any] = []
+        where = "WHERE t.status='closed' AND t.closed_ms IS NOT NULL"
+        if strategy_id is not None:
+            where += " AND t.strategy_id=?"
+            params.append(strategy_id)
+        rows = await self.db.fetch_all(
+            f"""
+            SELECT t.strategy_id, t.closed_ms, t.pnl_usd, s.deposit, s.name
+            FROM paper_trades t
+            LEFT JOIN paper_strategies s ON s.id=t.strategy_id
+            {where}
+            ORDER BY t.strategy_id, t.closed_ms ASC
+            """,
+            params,
+        )
+        out: dict[int, dict[str, Any]] = {}
+        for r in rows:
+            sid = int(r["strategy_id"])
+            if sid not in out:
+                out[sid] = {
+                    "strategy_id": sid,
+                    "name": r["name"],
+                    "deposit": float(r["deposit"] or 0.0),
+                    "points": [
+                        {"ts_ms": 0, "balance": float(r["deposit"] or 0.0)},
+                    ],
+                }
+            last_balance = out[sid]["points"][-1]["balance"]
+            new_balance = last_balance + float(r["pnl_usd"] or 0.0)
+            out[sid]["points"].append({
+                "ts_ms": int(r["closed_ms"]),
+                "balance": round(new_balance, 4),
+            })
+        # Replace placeholder ts_ms=0 first point with strategy created_ms if available.
+        return out
+
+    # ----- bot settings -----
+
+    async def get_bot_setting(self, key: str) -> str | None:
+        row = await self.db.fetch_one(
+            "SELECT value FROM bot_settings WHERE key=?", (key,)
+        )
+        return row["value"] if row else None
+
+    async def set_bot_setting(self, key: str, value: str) -> None:
+        await self.db.execute(
+            """
+            INSERT INTO bot_settings(key, value, updated_ms)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value=excluded.value, updated_ms=excluded.updated_ms
+            """,
+            (key, value, now_ms()),
+        )
+
+    async def list_bot_settings(self) -> dict[str, str]:
+        rows = await self.db.fetch_all("SELECT key, value FROM bot_settings")
+        return {r["key"]: r["value"] for r in rows}
+
     async def signals_per_day(self, days: int = 30) -> list[dict[str, Any]]:
         rows = await self.db.fetch_all(
             """
