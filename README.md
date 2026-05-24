@@ -101,9 +101,12 @@ All settings live in `.env`. The most important knobs:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MIN_QUOTE_VOLUME_24H` | `30000000` | Skip illiquid coins. |
-| `MAX_SYMBOLS` | `120` | Hard cap on the active universe (keep RAM small). |
+| `MIN_QUOTE_VOLUME_24H` | `30000000` | Skip illiquid coins (junk filter for the gainer scan pool). |
 | `BLACKLIST` | `BTCUSDT,ETHUSDT,...` | Never short these. |
+| `GAINER_SCAN_INTERVAL_SEC` | `90` | REST scan interval driving dynamic WS subs. |
+| `GAINER_MIN_PCT` | `2.0` | Minimum price delta in one interval to become a candidate. |
+| `GAINER_TOP_N` | `30` | Max active WS subscriptions per scan. |
+| `GAINER_DROP_AFTER_CYCLES` | `3` | Drop a symbol from WS after this many consecutive misses. |
 | `PUMP_MIN_5M_PCT` / `PUMP_MIN_15M_PCT` | `4.0` / `7.0` | Pump gate. |
 | `PUMP_MIN_VOL_RATIO` | `3.0` | Volume spike vs baseline. |
 | `PUMP_MIN_OI_PCT` | `2.5` | OI build threshold. |
@@ -112,7 +115,7 @@ All settings live in `.env`. The most important knobs:
 | `CONFIDENCE_LOW/MED/HIGH` | `55/70/82` | Labels for Telegram. |
 | `WATCH_TTL_SEC` | `900` | Drop WATCH state after this. |
 | `COOLDOWN_SEC` | `1800` | Per-symbol post-signal cooldown. |
-| `OUTCOME_TRACK_SEC` | `3600` | Paper-analysis window. |
+| `OUTCOME_TRACK_SEC` | `21600` | Paper-analysis window (6h; early-close on hit_sl / hit_tp2 / invalidated). |
 | `OUTCOME_INVALIDATION_PCT` | `2.0` | Adverse move that invalidates a setup. |
 
 Advanced **weight overrides** live in `config/default.yaml`. Tweak

@@ -18,10 +18,12 @@ import asyncio
 import contextlib
 import logging
 import time
+from collections.abc import Iterable
 from typing import Any
 
 from config import Settings, get_settings
 from connectors import BinanceFuturesREST, StreamManager
+from core.gainer_scanner import GainerScanner
 from core.market_regime import MarketRegimeDetector
 from core.models import (
     Kline,
@@ -47,6 +49,7 @@ class Engine:
         self.rest = BinanceFuturesREST(self.settings.binance.rest_url)
         self.regime = MarketRegimeDetector(self.settings.regime, self.rest)
         self.universe = Universe(self.settings.universe, self.rest)
+        self.gainer = GainerScanner(self.settings.gainer, self.rest)
         self.pump_detector = PumpDetector(
             self.settings.pump, self.regime, weights=weights.get("pump_weights"),
         )
@@ -72,7 +75,10 @@ class Engine:
             self.settings.binance.ws_url, self._on_ws_message
         )
 
+        # Universe is the junk-filtered candidate pool; active is the subset
+        # we currently keep WS subscriptions for.
         self.symbols: list[str] = []
+        self._active_symbols: set[str] = set()
         self.state: dict[str, SymbolStateData] = {}
 
         self._heartbeat_path = self.settings.data_dir / "heartbeat"
@@ -103,19 +109,25 @@ class Engine:
             log.error("engine_bootstrap_failed", extra={"err": repr(exc)}, exc_info=True)
             raise
 
-        await self._warmup_klines()
-        await self._start_streams()
+        # First gainer scan only seeds the price snapshot — no symbols are
+        # active yet. We start with an empty WS set and let the scan loop
+        # bring symbols in as they pop.
+        await self.gainer.scan(protected=self._protected_symbols())
+        await self.stream_manager.start([])
         await self.telegram.start()
 
         self._tasks.extend([
             asyncio.create_task(self._heartbeat_loop(), name="heartbeat"),
             asyncio.create_task(self._universe_refresh_loop(), name="universe-refresh"),
+            asyncio.create_task(self._gainer_scan_loop(), name="gainer-scan"),
             asyncio.create_task(self._regime_refresh_loop(), name="regime-refresh"),
             asyncio.create_task(self._oi_polling_loop(), name="oi-polling"),
             asyncio.create_task(self._market_snapshot_loop(), name="market-snapshot"),
         ])
 
-        log.info("engine_started", extra={"symbols": len(self.symbols)})
+        log.info("engine_started",
+                 extra={"universe": len(self.symbols),
+                        "active": len(self._active_symbols)})
 
     async def shutdown(self) -> None:
         log.info("engine_shutting_down")
@@ -134,23 +146,31 @@ class Engine:
     # ------------- bootstrap -------------
 
     async def _initial_universe_refresh(self) -> None:
+        """Refresh the junk-filtered candidate pool.
+
+        Universe no longer drives WS subscriptions — the gainer scanner does.
+        We still need this so the scanner has a vetted candidate list
+        (volume floor, blacklist, leveraged exclusion).
+        """
         symbols = await self.universe.refresh()
         if not symbols:
             raise RuntimeError("no symbols matched the universe filters")
         self.symbols = symbols
-        for s in symbols:
-            self.state.setdefault(s, SymbolStateData(symbol=s))
         # add regime symbol too so we can refresh its klines easily
         self.state.setdefault(self.settings.regime.btc_symbol,
                               SymbolStateData(symbol=self.settings.regime.btc_symbol))
+        self.gainer.set_universe(symbols)
         if self.repo:
             await self.repo.upsert_symbols(self.universe.export_rows())
 
-    async def _warmup_klines(self) -> None:
-        """Backfill 60m of 1m klines for each symbol.
+    async def _warmup_klines(self, symbols: Iterable[str]) -> None:
+        """Backfill 60m of 1m klines for the given symbols.
 
-        Sequential, but with bounded concurrency to keep RAM low on a 1GB VPS.
+        Called on demand when a new pair joins the active set.
         """
+        targets = [s for s in symbols if s in self.state]
+        if not targets:
+            return
         sem = asyncio.Semaphore(6)
         async def fetch(sym: str, _sem: asyncio.Semaphore = sem) -> None:
             async with _sem:
@@ -159,18 +179,16 @@ class Engine:
                 except Exception as exc:  # noqa: BLE001
                     log.warning("warmup_failed", extra={"sym": sym, "err": repr(exc)})
                     return
-                st = self.state[sym]
+                st = self.state.get(sym)
+                if st is None:
+                    return
                 for k in klines:
                     st.push_kline(_kline_from_rest(k))
 
-        await asyncio.gather(*(fetch(s) for s in self.symbols))
-        log.info("warmup_complete")
+        await asyncio.gather(*(fetch(s) for s in targets))
+        log.debug("warmup_complete", extra={"count": len(targets)})
 
-    async def _start_streams(self) -> None:
-        streams = self._build_stream_list(self.symbols)
-        await self.stream_manager.start(streams)
-
-    def _build_stream_list(self, symbols: list[str]) -> list[str]:
+    def _build_stream_list(self, symbols: Iterable[str]) -> list[str]:
         streams: list[str] = []
         for s in symbols:
             sym = s.lower()
@@ -178,6 +196,46 @@ class Engine:
             streams.append(f"{sym}@kline_1m")
             streams.append(f"{sym}@markPrice@1s")
         return streams
+
+    def _protected_symbols(self) -> set[str]:
+        """Symbols that must stay subscribed regardless of gainer delta."""
+        protected: set[str] = set()
+        for sym, st in self.state.items():
+            if sym == self.settings.regime.btc_symbol:
+                continue
+            if st.state in (SymbolState.WATCH, SymbolState.COOLDOWN):
+                protected.add(sym)
+        if self.outcome_tracker is not None:
+            protected.update(self.outcome_tracker.tracked_symbols())
+        return protected
+
+    async def _apply_active_symbols(self, next_active: Iterable[str]) -> None:
+        next_set = {s.upper() for s in next_active}
+        # Filter to universe pool — never subscribe to junk.
+        if self.symbols:
+            allowed = set(self.symbols)
+            next_set = next_set & allowed
+        added = next_set - self._active_symbols
+        removed = self._active_symbols - next_set
+        if not added and not removed:
+            return
+        for sym in added:
+            self.state.setdefault(sym, SymbolStateData(symbol=sym))
+        if added:
+            await self._warmup_klines(added)
+        for sym in removed:
+            # Keep state if symbol is protected (still tracking outcomes etc).
+            if sym in self._protected_symbols():
+                next_set.add(sym)
+                continue
+            self.state.pop(sym, None)
+        self._active_symbols = next_set
+        await self.stream_manager.update_streams(
+            self._build_stream_list(sorted(self._active_symbols))
+        )
+        log.info("active_symbols_changed",
+                 extra={"added": sorted(added), "removed": sorted(removed - next_set),
+                        "active": len(self._active_symbols)})
 
     # ------------- background loops -------------
 
@@ -191,6 +249,10 @@ class Engine:
             await asyncio.sleep(20)
 
     async def _universe_refresh_loop(self) -> None:
+        """Periodic universe refresh — junk-filter pool, not WS subscriptions.
+
+        WS subscriptions are managed by :meth:`_gainer_scan_loop`.
+        """
         while not self._stopping.is_set():
             await asyncio.sleep(self.settings.universe.refresh_minutes * 60)
             if self._stopping.is_set():
@@ -199,21 +261,31 @@ class Engine:
                 new_symbols = await self.universe.refresh()
                 if not new_symbols:
                     continue
-                added = set(new_symbols) - set(self.symbols)
-                removed = set(self.symbols) - set(new_symbols)
-                if added or removed:
-                    log.info("universe_changed",
-                             extra={"added": list(added), "removed": list(removed)})
-                    self.symbols = new_symbols
-                    for s in added:
-                        self.state.setdefault(s, SymbolStateData(symbol=s))
-                    for s in removed:
-                        self.state.pop(s, None)
-                    await self.stream_manager.update_streams(self._build_stream_list(new_symbols))
+                self.symbols = new_symbols
+                self.gainer.set_universe(new_symbols)
                 if self.repo:
                     await self.repo.upsert_symbols(self.universe.export_rows())
             except Exception as exc:  # noqa: BLE001
                 log.warning("universe_refresh_failed", extra={"err": repr(exc)})
+
+    async def _gainer_scan_loop(self) -> None:
+        """Periodic REST scan that drives the active WS set.
+
+        Each cycle: one /ticker/24hr request, delta vs prior snapshot,
+        top gainers become the new active set (preserving anything in
+        WATCH/COOLDOWN or under active outcome tracking).
+        """
+        interval = max(15, int(self.settings.gainer.scan_interval_sec))
+        while not self._stopping.is_set():
+            await asyncio.sleep(interval)
+            if self._stopping.is_set():
+                return
+            try:
+                protected = self._protected_symbols()
+                next_active = await self.gainer.scan(protected=protected)
+                await self._apply_active_symbols(next_active)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("gainer_scan_loop_failed", extra={"err": repr(exc)})
 
     async def _regime_refresh_loop(self) -> None:
         while not self._stopping.is_set():
@@ -245,7 +317,7 @@ class Engine:
                     except Exception:  # noqa: BLE001
                         pass
 
-            await asyncio.gather(*(poll(s) for s in list(self.symbols)))
+            await asyncio.gather(*(poll(s) for s in list(self._active_symbols)))
             await asyncio.sleep(60)
 
     async def _market_snapshot_loop(self) -> None:
@@ -470,7 +542,9 @@ class Engine:
             "messages_seen": self._messages_seen,
             "signals_emitted": self._signals_emitted,
             "pumps_detected": self._pumps_detected,
-            "symbols": len(self.symbols),
+            "universe": len(self.symbols),
+            "active_symbols": len(self._active_symbols),
+            "gainer": self.gainer.stats(),
             "ws": self.stream_manager.stats(),
             "regime": self.regime.as_dict(),
             "anti_spam": self.anti_spam.to_dict(),

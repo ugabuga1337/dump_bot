@@ -6,7 +6,7 @@
     <div class="card">
         <h3>Latest signals</h3>
         <div hx-get="/api/fragments/signals?limit=10" hx-trigger="load, every 15s" hx-swap="innerHTML">
-            <p class="muted">loading…</p>
+            <p class="loading">loading signals…</p>
         </div>
     </div>
     <div class="card">
@@ -15,6 +15,7 @@
              hx-get="/api/fragments/status"
              hx-trigger="load, every 5s"
              hx-swap="innerHTML">
+            <p class="loading">loading status…</p>
         </div>
     </div>
 </div>

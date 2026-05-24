@@ -1,5 +1,7 @@
-{% if not coins %}
-<p class="muted">No coin stats yet.</p>
+{% if coins is none %}
+<p class="error">Unable to load coin stats.</p>
+{% elif not coins %}
+<p class="empty">No coin stats yet.</p>
 {% else %}
 <table class="signals">
     <thead>

@@ -97,7 +97,7 @@ class Universe:
             )
 
         tradable.sort(key=lambda r: r["quote_volume_24h"], reverse=True)
-        if len(tradable) > self._cfg.max_symbols:
+        if self._cfg.max_symbols > 0 and len(tradable) > self._cfg.max_symbols:
             tradable = tradable[: self._cfg.max_symbols]
 
         self._symbols = [r["symbol"] for r in tradable]

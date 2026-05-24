@@ -6,6 +6,7 @@ Engine and Watchdog are NOT re-exported here on purpose: they import the
 create a circular import. Use ``from core.engine import Engine`` directly.
 """
 
+from .gainer_scanner import GainerScanner
 from .market_regime import MarketRegimeDetector
 from .models import (
     ConfidenceLabel,
@@ -22,6 +23,7 @@ from .universe import Universe
 
 __all__ = [
     "ConfidenceLabel",
+    "GainerScanner",
     "Kline",
     "MarkPriceTick",
     "MarketRegime",

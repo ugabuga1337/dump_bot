@@ -1,5 +1,7 @@
-{% if not patterns %}
-<p class="muted">No setups recorded.</p>
+{% if patterns is none %}
+<p class="error">Unable to load setups.</p>
+{% elif not patterns %}
+<p class="empty">No setups recorded.</p>
 {% else %}
 <table class="signals">
     <thead>

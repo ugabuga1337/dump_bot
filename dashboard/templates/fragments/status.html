@@ -1,4 +1,6 @@
-{% set status = status %}
+{% if load_error or status is none %}
+<div class="error-banner">Unable to load status — engine may be offline.</div>
+{% else %}
 {% set ws_total = (status.ws | length) if status.ws else 0 %}
 {% set ws_ok = status.ws | selectattr('connected') | list | length if status.ws else 0 %}
 <div class="status-block">
@@ -32,3 +34,4 @@
     </div>
     {% endif %}
 </div>
+{% endif %}

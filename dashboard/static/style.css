@@ -100,6 +100,28 @@ main {
 
 .muted { color: var(--muted); }
 .error { color: var(--red); }
+.empty {
+    color: var(--muted);
+    padding: 10px 4px;
+    font-style: italic;
+}
+.loading {
+    color: var(--muted);
+    padding: 10px 4px;
+}
+.error-banner {
+    background: rgba(248, 113, 113, .08);
+    border: 1px solid rgba(248, 113, 113, .35);
+    color: var(--red);
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 12.5px;
+    line-height: 1.45;
+}
+.error-banner code {
+    color: var(--red);
+    background: rgba(248, 113, 113, .08);
+}
 
 .status-block { display: flex; flex-wrap: wrap; gap: 10px 28px; font-size: 13px; }
 .status-block .row { display: flex; gap: 6px; }

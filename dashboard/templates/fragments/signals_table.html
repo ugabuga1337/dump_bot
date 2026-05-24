@@ -1,5 +1,7 @@
-{% if not signals %}
-<p class="muted">No signals yet.</p>
+{% if signals is none %}
+<p class="error">Unable to load signals.</p>
+{% elif not signals %}
+<p class="empty">No signals match the current filters.</p>
 {% else %}
 <table class="signals">
     <thead>

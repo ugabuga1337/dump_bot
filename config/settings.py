@@ -68,10 +68,18 @@ class BinanceConfig:
 
 @dataclass(slots=True, frozen=True)
 class UniverseConfig:
+    """Universe is now a junk-filter only.
+
+    The gainer scanner picks which symbols actually get WS subscriptions;
+    Universe limits the pool of candidates the scanner inspects
+    (volume floor, blacklist, leveraged-token exclusion).
+    """
     quote_asset: str = "USDT"
     min_quote_volume_24h: float = 30_000_000.0
     min_price: float = 0.0005
-    max_symbols: int = 120
+    # Deprecated: previously hard-capped the WS symbol count. Kept for
+    # backwards-compat but no longer used to size WS — gainer scanner does.
+    max_symbols: int = 0
     refresh_minutes: int = 15
     whitelist: list[str] = field(default_factory=list)
     blacklist: list[str] = field(default_factory=lambda: ["BTCUSDT", "ETHUSDT"])
@@ -129,8 +137,17 @@ class DashboardConfig:
 
 
 @dataclass(slots=True, frozen=True)
+class GainerConfig:
+    """REST-driven gainer scan + dynamic WS subscription tuning."""
+    scan_interval_sec: int = 90
+    min_pct: float = 2.0
+    top_n: int = 30
+    drop_after_cycles: int = 3
+
+
+@dataclass(slots=True, frozen=True)
 class OutcomeConfig:
-    track_seconds: int = 3600
+    track_seconds: int = 21600
     invalidation_pct: float = 2.0
 
 
@@ -149,6 +166,7 @@ class Settings:
     regime: RegimeConfig
     dashboard: DashboardConfig
     outcome: OutcomeConfig
+    gainer: GainerConfig
     raw_yaml: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -190,7 +208,7 @@ class Settings:
                 quote_asset=(_env("QUOTE_ASSET", "USDT") or "USDT").upper(),
                 min_quote_volume_24h=_env_float("MIN_QUOTE_VOLUME_24H", 30_000_000.0),
                 min_price=_env_float("MIN_PRICE", 0.0005),
-                max_symbols=_env_int("MAX_SYMBOLS", 120),
+                max_symbols=_env_int("MAX_SYMBOLS", 0),
                 refresh_minutes=_env_int("UNIVERSE_REFRESH_MIN", 15),
                 whitelist=_env_list("WHITELIST", []),
                 blacklist=_env_list("BLACKLIST", ["BTCUSDT", "ETHUSDT"]),
@@ -234,8 +252,14 @@ class Settings:
                 behind_proxy=_env_bool("DASHBOARD_BEHIND_PROXY", False),
             ),
             outcome=OutcomeConfig(
-                track_seconds=_env_int("OUTCOME_TRACK_SEC", 3600),
+                track_seconds=_env_int("OUTCOME_TRACK_SEC", 21600),
                 invalidation_pct=_env_float("OUTCOME_INVALIDATION_PCT", 2.0),
+            ),
+            gainer=GainerConfig(
+                scan_interval_sec=_env_int("GAINER_SCAN_INTERVAL_SEC", 90),
+                min_pct=_env_float("GAINER_MIN_PCT", 2.0),
+                top_n=_env_int("GAINER_TOP_N", 30),
+                drop_after_cycles=_env_int("GAINER_DROP_AFTER_CYCLES", 3),
             ),
             raw_yaml=yaml_data,
         )

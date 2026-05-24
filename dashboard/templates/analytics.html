@@ -2,98 +2,51 @@
 {% block title %}Analytics · Dump Bot{% endblock %}
 {% block heading %}Analytics{% endblock %}
 {% block content %}
-<div class="grid two-col">
-    <div class="card">
-        <h3>Summary (7 days)</h3>
-        <div id="summary-block">loading…</div>
-    </div>
-    <div class="card">
-        <h3>Signals per day</h3>
-        <canvas id="timeline-chart" height="180"></canvas>
-    </div>
+<div class="card">
+    <h3>Summary (7 days)</h3>
+    <div id="summary-block"><p class="loading">loading…</p></div>
 </div>
 <div class="grid two-col">
     <div class="card">
-        <h3>Confidence vs MFE</h3>
-        <canvas id="conf-mfe-chart" height="220"></canvas>
+        <h3>Per symbol</h3>
+        <div id="per-symbol"
+             hx-get="/api/fragments/coins"
+             hx-trigger="load, every 30s"
+             hx-swap="innerHTML">
+            <p class="loading">loading…</p>
+        </div>
     </div>
     <div class="card">
-        <h3>Setup performance</h3>
-        <canvas id="setup-chart" height="220"></canvas>
+        <h3>Per setup</h3>
+        <div id="per-setup"
+             hx-get="/api/fragments/patterns"
+             hx-trigger="load, every 30s"
+             hx-swap="innerHTML">
+            <p class="loading">loading…</p>
+        </div>
     </div>
 </div>
 <script>
-async function loadAnalytics() {
-    const sum = await fetch('/api/analytics/summary?days=7').then(r => r.json());
-    document.getElementById('summary-block').innerHTML = `
-        <p><b>Total:</b> ${sum.total} &nbsp;
-            <b>Winrate:</b> ${sum.winrate_pct.toFixed(2)}% &nbsp;
-            <b>Avg MFE:</b> ${sum.avg_mfe.toFixed(2)}% &nbsp;
-            <b>Avg MAE:</b> ${sum.avg_mae.toFixed(2)}% &nbsp;
-            <b>Avg confidence:</b> ${sum.avg_confidence.toFixed(1)}</p>
-    `;
-
-    const tl = await fetch('/api/analytics/timeline?days=30').then(r => r.json());
-    if (typeof Chart === 'undefined') { setTimeout(loadAnalytics, 250); return; }
-    new Chart(document.getElementById('timeline-chart'), {
-        type: 'line',
-        data: {
-            labels: tl.map(r => r.day),
-            datasets: [
-                {label: 'signals', data: tl.map(r => r.total),
-                 borderColor: '#7dd3fc', backgroundColor: 'rgba(125,211,252,.2)',
-                 tension: .25, fill: true},
-                {label: 'wins', data: tl.map(r => r.wins),
-                 borderColor: '#86efac', tension: .25}
-            ]
-        },
-        options: chartOpts()
-    });
-
-    const sigs = await fetch('/api/signals?limit=300').then(r => r.json());
-    new Chart(document.getElementById('conf-mfe-chart'), {
-        type: 'scatter',
-        data: { datasets: [{
-            label: 'signals',
-            data: sigs.map(s => ({x: s.confidence_score, y: s.max_favorable_pct || 0})),
-            backgroundColor: '#fbbf24',
-        }]},
-        options: {
-            ...chartOpts(),
-            scales: {
-                x: {title: {display: true, text: 'Confidence', color: '#a3a3a3'},
-                    ticks: {color:'#a3a3a3'}, grid:{color:'#27272a'}},
-                y: {title: {display: true, text: 'MFE (%)', color: '#a3a3a3'},
-                    ticks: {color:'#a3a3a3'}, grid:{color:'#27272a'}}
-            }
+async function loadAnalyticsSummary() {
+    const block = document.getElementById('summary-block');
+    try {
+        const r = await fetch('/api/analytics/summary?days=7');
+        if (!r.ok) {
+            block.innerHTML = '<div class="error-banner">Summary unavailable (' + r.status + ').</div>';
+            return;
         }
-    });
-
-    const setups = await fetch('/api/analytics/per_setup').then(r => r.json());
-    new Chart(document.getElementById('setup-chart'), {
-        type: 'bar',
-        data: {
-            labels: setups.map(s => s.tag),
-            datasets: [
-                {label: 'winrate %', data: setups.map(s => s.winrate_pct),
-                 backgroundColor: '#fb7185'},
-                {label: 'signals', data: setups.map(s => s.total),
-                 backgroundColor: '#7dd3fc'}
-            ]
-        },
-        options: chartOpts()
-    });
+        const sum = await r.json();
+        block.innerHTML =
+            '<p><b>Total:</b> ' + sum.total + ' &nbsp;' +
+            '<b>Winrate:</b> ' + sum.winrate_pct.toFixed(2) + '% &nbsp;' +
+            '<b>Avg MFE:</b> ' + sum.avg_mfe.toFixed(2) + '% &nbsp;' +
+            '<b>Avg MAE:</b> ' + sum.avg_mae.toFixed(2) + '% &nbsp;' +
+            '<b>Avg confidence:</b> ' + sum.avg_confidence.toFixed(1) + '</p>';
+    } catch (e) {
+        block.innerHTML = '<div class="error-banner">Summary failed: ' + e + '</div>';
+    }
 }
-function chartOpts() {
-    return {
-        responsive: true,
-        plugins: {legend: {labels: {color: '#a3a3a3'}}},
-        scales: {
-            x: {ticks:{color:'#a3a3a3'}, grid:{color:'#27272a'}},
-            y: {ticks:{color:'#a3a3a3'}, grid:{color:'#27272a'}}
-        }
-    };
-}
-document.addEventListener('DOMContentLoaded', loadAnalytics);
+document.addEventListener('DOMContentLoaded', loadAnalyticsSummary);
+setInterval(loadAnalyticsSummary, 30000);
 </script>
 {% endblock %}
