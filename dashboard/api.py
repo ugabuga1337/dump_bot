@@ -259,7 +259,10 @@ async def api_paper_strategies_create(
 ):
     data = payload.model_dump()
     data["active"] = 1 if data.pop("active") else 0
-    new_id = await repo.insert_paper_strategy(data)
+    try:
+        new_id = await repo.insert_paper_strategy(data)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"db_error: {exc!r}") from exc
     return {"id": new_id, **data}
 
 
@@ -274,7 +277,10 @@ async def api_paper_strategies_update(
         raise HTTPException(status_code=404, detail="strategy not found")
     data = payload.model_dump()
     data["active"] = 1 if data.pop("active") else 0
-    await repo.update_paper_strategy(strategy_id, data)
+    try:
+        await repo.update_paper_strategy(strategy_id, data)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"db_error: {exc!r}") from exc
     return {"id": strategy_id, **data}
 
 
